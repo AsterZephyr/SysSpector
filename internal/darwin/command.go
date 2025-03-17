@@ -32,11 +32,11 @@ func GetSystemInfo() (model.SystemInfo, error) {
 	}
 
 	// Get model
-	model, err := runCommand("sysctl", "-n", "hw.model")
+	modelName, err := runCommand("sysctl", "-n", "hw.model")
 	if err != nil {
 		log.Printf("Error getting model: %v", err)
 	} else {
-		info.Model = strings.TrimSpace(model)
+		info.Model = strings.TrimSpace(modelName)
 	}
 
 	// Get serial number
@@ -91,7 +91,7 @@ func GetSystemInfo() (model.SystemInfo, error) {
 	}
 
 	// Get disk details using diskutil
-	diskList, err := runCommand("diskutil", "list", "-plist")
+	_, err = runCommand("diskutil", "list", "-plist")
 	if err != nil {
 		log.Printf("Error getting disk list: %v", err)
 	}

@@ -23,15 +23,17 @@ func main() {
 	case "windows":
 		log.Println("Detected Windows OS")
 		sysInfo, err = windows.GetSystemInfo()
+		if err != nil {
+			log.Fatalf("Error collecting Windows system information: %v", err)
+		}
 	case "darwin":
 		log.Println("Detected macOS")
 		sysInfo, err = darwin.GetSystemInfo()
+		if err != nil {
+			log.Fatalf("Error collecting macOS system information: %v", err)
+		}
 	default:
 		log.Fatalf("Unsupported operating system: %s", runtime.GOOS)
-	}
-
-	if err != nil {
-		log.Printf("Warning: Some information could not be collected: %v", err)
 	}
 
 	// Print system information in JSON format
@@ -48,7 +50,7 @@ func main() {
 		if len(os.Args) > 2 {
 			outputFile = os.Args[2]
 		}
-
+		
 		err = os.WriteFile(outputFile, jsonData, 0644)
 		if err != nil {
 			log.Fatalf("Error writing to file %s: %v", outputFile, err)
