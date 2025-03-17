@@ -4,12 +4,14 @@
 package windows
 
 import (
-	"errors"
+	"fmt"
+	"runtime"
 
 	"github.com/AsterZephyr/SysSpector/pkg/model"
 )
 
-// GetSystemInfo returns an error on non-Windows platforms
+// GetSystemInfo 是 Windows 系统信息收集的存根实现
+// 当在非 Windows 平台上运行时，返回一个错误
 func GetSystemInfo() (model.SystemInfo, error) {
-	return model.SystemInfo{}, errors.New("windows implementation is not available on this platform")
+	return model.SystemInfo{}, fmt.Errorf("Windows system information collection is not supported on %s", runtime.GOOS)
 }

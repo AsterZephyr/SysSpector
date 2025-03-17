@@ -15,44 +15,50 @@ import (
 	"github.com/AsterZephyr/SysSpector/pkg/model"
 )
 
-// WMI query structures
+// WMI 查询结构体定义
+// win32ComputerSystem 表示计算机系统信息
 type win32ComputerSystem struct {
-	Model               string
-	Name                string
-	TotalPhysicalMemory uint64
+	Model               string // 计算机型号
+	Name                string // 计算机名称
+	TotalPhysicalMemory uint64 // 物理内存总量
 }
 
+// win32Processor 表示处理器信息
 type win32Processor struct {
-	Name          string
-	NumberOfCores uint32
+	Name          string // 处理器名称
+	NumberOfCores uint32 // 处理器核心数
 }
 
+// win32BIOS 表示BIOS信息
 type win32BIOS struct {
-	SerialNumber string
+	SerialNumber string // 序列号
 }
 
+// win32PhysicalMemory 表示物理内存信息
 type win32PhysicalMemory struct {
-	Capacity   uint64
-	MemoryType uint16
+	Capacity   uint64 // 内存容量
+	MemoryType uint16 // 内存类型代码
 }
 
+// win32DiskDrive 表示磁盘驱动器信息
 type win32DiskDrive struct {
-	Caption      string
-	Model        string
-	Size         string
-	SerialNumber string
+	Caption      string // 磁盘标题
+	Model        string // 磁盘型号
+	Size         string // 磁盘容量
+	SerialNumber string // 磁盘序列号
 }
 
+// win32ComputerSystemProduct 表示计算机系统产品信息
 type win32ComputerSystemProduct struct {
-	UUID string
+	UUID string // 硬件UUID
 }
 
-// GetSystemInfo collects system information on Windows
+// GetSystemInfo 收集 Windows 系统的硬件和系统信息
 func GetSystemInfo() (model.SystemInfo, error) {
 	var info model.SystemInfo
 	var err error
 
-	// Get hostname and OS info
+	// 获取主机名和操作系统信息
 	hostInfo, err := host.Info()
 	if err != nil {
 		log.Printf("Error getting host info: %v", err)
@@ -61,7 +67,7 @@ func GetSystemInfo() (model.SystemInfo, error) {
 		info.OS = hostInfo.Platform + " " + hostInfo.PlatformVersion
 	}
 
-	// Get computer system info
+	// 获取计算机系统信息
 	var computerSystems []win32ComputerSystem
 	err = wmi.Query("SELECT Model, Name, TotalPhysicalMemory FROM Win32_ComputerSystem", &computerSystems)
 	if err != nil {
@@ -70,7 +76,7 @@ func GetSystemInfo() (model.SystemInfo, error) {
 		info.Model = computerSystems[0].Model
 	}
 
-	// Get serial number
+	// 获取序列号
 	var biosInfo []win32BIOS
 	err = wmi.Query("SELECT SerialNumber FROM Win32_BIOS", &biosInfo)
 	if err != nil {
@@ -79,7 +85,7 @@ func GetSystemInfo() (model.SystemInfo, error) {
 		info.SerialNumber = biosInfo[0].SerialNumber
 	}
 
-	// Get CPU info
+	// 获取CPU信息
 	var processors []win32Processor
 	err = wmi.Query("SELECT Name, NumberOfCores FROM Win32_Processor", &processors)
 	if err != nil {
@@ -91,14 +97,14 @@ func GetSystemInfo() (model.SystemInfo, error) {
 		}
 	}
 
-	// Get memory info
+	// 获取内存信息
 	var memoryInfo []win32PhysicalMemory
 	err = wmi.Query("SELECT Capacity, MemoryType FROM Win32_PhysicalMemory", &memoryInfo)
 	if err != nil {
 		log.Printf("Error querying Win32_PhysicalMemory: %v", err)
 	}
 
-	// Calculate total memory and determine type
+	// 计算总内存并确定类型
 	memStats, err := mem.VirtualMemory()
 	if err != nil {
 		log.Printf("Error getting memory info: %v", err)
@@ -109,7 +115,7 @@ func GetSystemInfo() (model.SystemInfo, error) {
 		}
 	}
 
-	// Get disk info
+	// 获取磁盘信息
 	var diskDrives []win32DiskDrive
 	err = wmi.Query("SELECT Caption, Model, Size, SerialNumber FROM Win32_DiskDrive", &diskDrives)
 	if err != nil {
@@ -117,16 +123,18 @@ func GetSystemInfo() (model.SystemInfo, error) {
 	} else {
 		for _, d := range diskDrives {
 			size, _ := strconv.ParseUint(d.Size, 10, 64)
+			// 转换为GB
+			sizeGB := size / (1024 * 1024 * 1024)
 			info.Disks = append(info.Disks, model.Disk{
 				Name:   d.Caption,
 				Model:  d.Model,
-				Size:   size,
+				Size:   sizeGB,
 				Serial: d.SerialNumber,
 			})
 		}
 	}
 
-	// Get UUID
+	// 获取硬件UUID
 	var systemProducts []win32ComputerSystemProduct
 	err = wmi.Query("SELECT UUID FROM Win32_ComputerSystemProduct", &systemProducts)
 	if err != nil {
@@ -138,13 +146,13 @@ func GetSystemInfo() (model.SystemInfo, error) {
 	return info, nil
 }
 
-// getMemoryTypeString converts WMI memory type code to string description
+// getMemoryTypeString 将WMI内存类型代码转换为字符串描述
 func getMemoryTypeString(memoryModules []win32PhysicalMemory) string {
 	if len(memoryModules) == 0 {
 		return "Unknown"
 	}
 
-	// Memory type codes according to WMI documentation
+	// 根据WMI文档的内存类型代码
 	memoryTypes := map[uint16]string{
 		0:  "Unknown",
 		1:  "Other",
