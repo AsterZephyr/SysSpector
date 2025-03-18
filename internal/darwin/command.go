@@ -81,7 +81,22 @@ func GetSystemInfo() (model.SystemInfo, error) {
 		}
 
 		// 检测是否为 Apple Silicon
-		isAppleSilicon := strings.Contains(info.Model, "Mac") && !strings.Contains(strings.ToLower(info.Model), "intel")
+		isAppleSilicon := false
+		
+		// 使用sysctl检查CPU架构
+		archOutput, err := runCommand("sysctl", "-n", "hw.machine")
+		if err == nil {
+			arch := strings.TrimSpace(archOutput)
+			// arm64表示Apple Silicon，x86_64表示Intel
+			isAppleSilicon = arch == "arm64"
+		}
+		
+		// 如果sysctl失败，尝试使用其他方法
+		if err != nil {
+			// 检查是否存在M系列芯片特有的sysctl键
+			_, err := runCommand("sysctl", "-n", "hw.perflevel0.physicalcpu")
+			isAppleSilicon = err == nil // 如果这个命令成功，说明是M系列芯片
+		}
 
 		var cpuModel string
 		if isAppleSilicon {
@@ -89,10 +104,10 @@ func GetSystemInfo() (model.SystemInfo, error) {
 			cpuModelOutput, err := runCommand("sysctl", "-n", "machdep.cpu.brand_string")
 			if err != nil || strings.TrimSpace(cpuModelOutput) == "" {
 				// 如果无法获取，则根据设备型号推断
-				if strings.Contains(info.Model, "Mac") {
-					if strings.Contains(info.Model, "14,") || strings.Contains(info.Model, "15,") {
+				if strings.Contains(info.ModelID, "Mac") {
+					if strings.Contains(info.ModelID, "14,") || strings.Contains(info.ModelID, "15,") {
 						cpuModel = "Apple M3"
-					} else if strings.Contains(info.Model, "13,") {
+					} else if strings.Contains(info.ModelID, "13,") {
 						cpuModel = "Apple M2"
 					} else {
 						cpuModel = "Apple M1"
@@ -105,15 +120,15 @@ func GetSystemInfo() (model.SystemInfo, error) {
 			}
 
 			// 对于 M 系列芯片，添加 Pro/Max/Ultra 后缀（如果能够确定）
-			if strings.Contains(info.Model, "Pro") {
+			if strings.Contains(info.ModelID, "Pro") {
 				if !strings.Contains(cpuModel, "Pro") {
 					cpuModel += " Pro"
 				}
-			} else if strings.Contains(info.Model, "Max") {
+			} else if strings.Contains(info.ModelID, "Max") {
 				if !strings.Contains(cpuModel, "Max") {
 					cpuModel += " Max"
 				}
-			} else if strings.Contains(info.Model, "Ultra") {
+			} else if strings.Contains(info.ModelID, "Ultra") {
 				if !strings.Contains(cpuModel, "Ultra") {
 					cpuModel += " Ultra"
 				}
@@ -144,14 +159,31 @@ func GetSystemInfo() (model.SystemInfo, error) {
 			cores = int(proc.NumCores)
 
 			// 检查是否为 Apple Silicon
-			if strings.Contains(cpuModel, "Apple") || (strings.Contains(info.Model, "Mac") && !strings.Contains(strings.ToLower(info.Model), "intel")) {
+			isAppleSilicon := false
+			
+			// 使用sysctl检查CPU架构
+			archOutput, err := runCommand("sysctl", "-n", "hw.machine")
+			if err == nil {
+				arch := strings.TrimSpace(archOutput)
+				// arm64表示Apple Silicon，x86_64表示Intel
+				isAppleSilicon = arch == "arm64"
+			}
+			
+			// 如果sysctl失败，尝试使用其他方法
+			if err != nil {
+				// 检查是否存在M系列芯片特有的sysctl键
+				_, err := runCommand("sysctl", "-n", "hw.perflevel0.physicalcpu")
+				isAppleSilicon = err == nil // 如果这个命令成功，说明是M系列芯片
+			}
+
+			if isAppleSilicon {
 				// 对于 M 系列芯片，可能需要额外处理
 				if !strings.Contains(cpuModel, "M1") && !strings.Contains(cpuModel, "M2") && !strings.Contains(cpuModel, "M3") {
 					// 如果 ghw 没有正确识别 M 系列芯片，尝试推断
-					if strings.Contains(info.Model, "Mac") {
-						if strings.Contains(info.Model, "14,") || strings.Contains(info.Model, "15,") {
+					if strings.Contains(info.ModelID, "Mac") {
+						if strings.Contains(info.ModelID, "14,") || strings.Contains(info.ModelID, "15,") {
 							cpuModel = "Apple M3"
-						} else if strings.Contains(info.Model, "13,") {
+						} else if strings.Contains(info.ModelID, "13,") {
 							cpuModel = "Apple M2"
 						} else {
 							cpuModel = "Apple M1"
@@ -159,16 +191,16 @@ func GetSystemInfo() (model.SystemInfo, error) {
 					}
 				}
 
-				// 添加 Pro/Max/Ultra 后缀（如果能够确定）
-				if strings.Contains(info.Model, "Pro") {
+				// 对于 M 系列芯片，添加 Pro/Max/Ultra 后缀（如果能够确定）
+				if strings.Contains(info.ModelID, "Pro") {
 					if !strings.Contains(cpuModel, "Pro") {
 						cpuModel += " Pro"
 					}
-				} else if strings.Contains(info.Model, "Max") {
+				} else if strings.Contains(info.ModelID, "Max") {
 					if !strings.Contains(cpuModel, "Max") {
 						cpuModel += " Max"
 					}
-				} else if strings.Contains(info.Model, "Ultra") {
+				} else if strings.Contains(info.ModelID, "Ultra") {
 					if !strings.Contains(cpuModel, "Ultra") {
 						cpuModel += " Ultra"
 					}
