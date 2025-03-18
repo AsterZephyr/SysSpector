@@ -18,7 +18,6 @@ import (
 
 // WMI 查询结构体定义
 // win32ComputerSystem 表示计算机系统信息
-// 该结构体用于存储计算机系统的基本信息，包括计算机型号、名称和物理内存总量
 type win32ComputerSystem struct {
 	Model               string // 计算机型号
 	Name                string // 计算机名称
@@ -26,7 +25,6 @@ type win32ComputerSystem struct {
 }
 
 // win32Processor 表示处理器信息
-// 该结构体用于存储处理器的基本信息，包括处理器名称和核心数
 type win32Processor struct {
 	Name          string // 处理器名称
 	NumberOfCores uint32 // 处理器核心数
@@ -39,14 +37,12 @@ type win32BIOS struct {
 }
 
 // win32PhysicalMemory 表示物理内存信息
-// 该结构体用于存储物理内存的基本信息，包括内存容量和内存类型代码
 type win32PhysicalMemory struct {
 	Capacity   uint64 // 内存容量
 	MemoryType uint16 // 内存类型代码
 }
 
 // win32DiskDrive 表示磁盘驱动器信息
-// 该结构体用于存储磁盘驱动器的基本信息，包括磁盘标题、型号、容量和序列号
 type win32DiskDrive struct {
 	Caption      string // 磁盘标题
 	Model        string // 磁盘型号
@@ -55,26 +51,24 @@ type win32DiskDrive struct {
 }
 
 // win32ComputerSystemProduct 表示计算机系统产品信息
-// 该结构体用于存储计算机系统产品的基本信息，包括硬件UUID
+
 type win32ComputerSystemProduct struct {
 	UUID string // 硬件UUID
 }
 
-// safeWMIQuery 是对 wmi.Query 的安全封装
-// 该函数用于安全地执行 WMI 查询，处理可能的 API 变更和错误
-// 同时考虑了不同 Windows 版本可能导致的 WMI 查询兼容性问题
+// safeWMIQuery :对wmi.Query 的安全封装
 func safeWMIQuery(query string, dst interface{}) error {
 	// 使用当前版本的 wmi.Query 方法
 	err := wmi.Query(query, dst)
 	if err != nil {
 		// 记录错误，但不中断执行
 		log.Printf("WMI query failed: %v. Query: %s", err, query)
-		
+
 		// 检查是否是权限或者类不存在的错误
 		errStr := err.Error()
-		if strings.Contains(errStr, "access denied") || 
-		   strings.Contains(errStr, "not found") ||
-		   strings.Contains(errStr, "invalid class") {
+		if strings.Contains(errStr, "access denied") ||
+			strings.Contains(errStr, "not found") ||
+			strings.Contains(errStr, "invalid class") {
 			// 这可能是由于 Windows 版本不兼容导致的
 			log.Printf("This may be due to Windows version incompatibility")
 		}
@@ -96,7 +90,7 @@ func GetSystemInfo() (model.SystemInfo, error) {
 	} else {
 		info.Hostname = hostInfo.Hostname
 		info.OS = hostInfo.Platform + " " + hostInfo.PlatformVersion
-		
+
 		// 记录 Windows 版本信息，用于后续可能的版本特定查询
 		log.Printf("Windows version: %s %s", hostInfo.Platform, hostInfo.PlatformVersion)
 	}
@@ -106,7 +100,14 @@ func GetSystemInfo() (model.SystemInfo, error) {
 	var computerSystems []win32ComputerSystem
 	err = safeWMIQuery("SELECT Model, Name, TotalPhysicalMemory FROM Win32_ComputerSystem", &computerSystems)
 	if err == nil && len(computerSystems) > 0 {
+		info.ModelID = computerSystems[0].Model // 在Windows中，型号标识符与型号名称相同
 		info.Model = computerSystems[0].Model
+
+		// 尝试获取更友好的型号名称
+		marketingName, err := getMarketingModelName(info.Model)
+		if err == nil && marketingName != "" {
+			info.Model = marketingName
+		}
 	}
 
 	// 获取序列号
@@ -129,14 +130,13 @@ func GetSystemInfo() (model.SystemInfo, error) {
 	} else {
 		// 如果WMI查询失败，尝试使用备用方法获取CPU信息
 		log.Printf("Falling back to alternative method for CPU info")
-		
-		// 尝试使用不同的WMI查询（适用于某些Windows版本）
+
 		// 在某些Windows版本中，Win32_Processor可能有不同的属性名称
 		var altProcessors []struct {
 			ProcessorName string
 			CoreCount     uint32
 		}
-		
+
 		// 尝试备选查询
 		altErr := safeWMIQuery("SELECT Name AS ProcessorName, NumberOfCores AS CoreCount FROM Win32_Processor", &altProcessors)
 		if altErr == nil && len(altProcessors) > 0 {
@@ -153,12 +153,10 @@ func GetSystemInfo() (model.SystemInfo, error) {
 		}
 	}
 
-	// 获取内存信息
 	// 通过调用safeWMIQuery()函数查询Win32_PhysicalMemory表获取内存信息
 	var memoryInfo []win32PhysicalMemory
 	err = safeWMIQuery("SELECT Capacity, MemoryType FROM Win32_PhysicalMemory", &memoryInfo)
 
-	// 计算总内存并确定类型
 	// 通过调用mem.VirtualMemory()函数获取内存信息，并计算总内存和内存类型
 	memStats, err := mem.VirtualMemory()
 	if err != nil {
@@ -189,12 +187,12 @@ func GetSystemInfo() (model.SystemInfo, error) {
 	} else {
 		// 如果标准查询失败，尝试备选查询（适用于某些Windows版本）
 		var altDiskDrives []struct {
-			DiskName     string
-			DiskModel    string
-			DiskSize     string
-			DiskSerial   string
+			DiskName   string
+			DiskModel  string
+			DiskSize   string
+			DiskSerial string
 		}
-		
+
 		// 尝试备选查询
 		altErr := safeWMIQuery("SELECT Caption AS DiskName, Model AS DiskModel, Size AS DiskSize, SerialNumber AS DiskSerial FROM Win32_DiskDrive", &altDiskDrives)
 		if altErr == nil {
@@ -212,7 +210,6 @@ func GetSystemInfo() (model.SystemInfo, error) {
 		}
 	}
 
-	// 获取硬件UUID
 	// 通过调用safeWMIQuery()函数查询Win32_ComputerSystemProduct表获取硬件UUID
 	var systemProducts []win32ComputerSystemProduct
 	err = safeWMIQuery("SELECT UUID FROM Win32_ComputerSystemProduct", &systemProducts)
@@ -223,8 +220,49 @@ func GetSystemInfo() (model.SystemInfo, error) {
 	return info, nil
 }
 
+// getMarketingModelName 尝试获取更友好的型号名称
+func getMarketingModelName(modelID string) (string, error) {
+	// 从WMI获取更详细的系统信息
+	var productInfo []struct {
+		Name string
+	}
+
+	err := safeWMIQuery("SELECT Name FROM Win32_ComputerSystemProduct", &productInfo)
+	if err == nil && len(productInfo) > 0 && productInfo[0].Name != "" {
+		return productInfo[0].Name, nil
+	}
+
+	// 如果无法从WMI获取，使用映射表，实际应用中可能需要更完整的映射表
+	modelMap := map[string]string{
+		"Surface Laptop 3":   "Microsoft Surface Laptop 3",
+		"Surface Pro 7":      "Microsoft Surface Pro 7",
+		"Surface Book 3":     "Microsoft Surface Book 3",
+		"XPS 15 9500":        "Dell XPS 15 9500",
+		"XPS 13 9310":        "Dell XPS 13 9310",
+		"ThinkPad X1 Carbon": "Lenovo ThinkPad X1 Carbon",
+		"ThinkPad T14s":      "Lenovo ThinkPad T14s",
+		"EliteBook 840 G7":   "HP EliteBook 840 G7",
+		"ProBook 450 G7":     "HP ProBook 450 G7",
+		"ZBook Studio G7":    "HP ZBook Studio G7",
+	}
+
+	// 尝试精确匹配
+	if name, ok := modelMap[modelID]; ok {
+		return name, nil
+	}
+
+	// 尝试部分匹配
+	for key, value := range modelMap {
+		if strings.Contains(modelID, key) {
+			return value, nil
+		}
+	}
+
+	// 如果在映射表中找不到，则返回原始型号ID
+	return modelID, nil
+}
+
 // getMemoryTypeString 将WMI内存类型代码转换为字符串描述
-// 该函数用于将WMI内存类型代码转换为字符串描述
 func getMemoryTypeString(memoryModules []win32PhysicalMemory) string {
 	if len(memoryModules) == 0 {
 		return "Unknown"
