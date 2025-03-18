@@ -5,11 +5,12 @@ type SystemInfo struct {
 	Hostname     string      // 计算机主机名
 	OS           string      // 操作系统类型和版本
 	Model        string      // 设备型号
+	ModelID      string      // 设备型号标识符
 	SerialNumber string      // 设备序列号
+	UUID         string      // 硬件UUID（Windows为UUID，macOS为BRUUID）
 	CPU          CPUInfo     // CPU信息
 	Memory       MemoryInfo  // 内存信息
 	Disks        []Disk      // 磁盘信息列表
-	UUID         string      // 硬件UUID（Windows为UUID，macOS为BRUUID）
 }
 
 // CPUInfo 表示处理器信息

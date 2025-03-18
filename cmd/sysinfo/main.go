@@ -85,11 +85,14 @@ func formatSystemInfo(info model.SystemInfo) string {
 		sb.WriteString(fmt.Sprintf("2. 型号名称：%s\n", info.Model))
 	}
 
-	// 3. 设备型号（与型号名称相同）
-	if info.Model != "" {
+	// 3. 型号标识符
+	if info.ModelID != "" {
+		sb.WriteString(fmt.Sprintf("3. 型号标识符：%s\n", info.ModelID))
+	} else if info.Model != "" {
+		// 如果没有ModelID但有Model，则使用Model作为标识符
 		sb.WriteString(fmt.Sprintf("3. 型号标识符：%s\n", info.Model))
 	} else {
-		sb.WriteString("\n")
+		sb.WriteString("3. 型号标识符：未知\n")
 	}
 
 	// 4. 序列号

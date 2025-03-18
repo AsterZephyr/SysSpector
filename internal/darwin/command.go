@@ -30,12 +30,27 @@ func GetSystemInfo() (model.SystemInfo, error) {
 		info.OS = hostInfo.Platform + " " + hostInfo.PlatformVersion
 	}
 
-	// 获取设备型号
+	// 获取设备型号标识符
 	modelName, err := runCommand("sysctl", "-n", "hw.model")
 	if err != nil {
 		log.Printf("Error getting model: %v", err)
 	} else {
-		info.Model = strings.TrimSpace(modelName)
+		info.Model = strings.TrimSpace(modelName) // 保存型号标识符
+	}
+	
+	// 获取友好的型号名称
+	marketingName, err := runCommand("system_profiler", "SPHardwareDataType")
+	if err != nil {
+		log.Printf("Error getting marketing model name: %v", err)
+	} else {
+		// 从system_profiler输出中提取型号名称
+		re := regexp.MustCompile(`Model Name: (.+)`)
+		matches := re.FindStringSubmatch(marketingName)
+		if len(matches) > 1 {
+			// 如果找到了型号名称，更新Model字段，并将原始型号标识符保存到ModelID
+			info.ModelID = info.Model // 保存原始型号标识符
+			info.Model = strings.TrimSpace(matches[1]) // 更新为友好的型号名称
+		}
 	}
 
 	// 获取序列号
@@ -55,7 +70,7 @@ func GetSystemInfo() (model.SystemInfo, error) {
 	cpuInfo, err := ghw.CPU()
 	if err != nil {
 		log.Printf("Error getting CPU info with ghw: %v", err)
-		
+
 		// 如果 ghw 失败，回退到 gopsutil
 		coreCount, err := runCommand("sysctl", "-n", "hw.physicalcpu")
 		cores := 0
@@ -64,10 +79,10 @@ func GetSystemInfo() (model.SystemInfo, error) {
 		} else {
 			cores, _ = strconv.Atoi(strings.TrimSpace(coreCount))
 		}
-		
+
 		// 检测是否为 Apple Silicon
 		isAppleSilicon := strings.Contains(info.Model, "Mac") && !strings.Contains(strings.ToLower(info.Model), "intel")
-		
+
 		var cpuModel string
 		if isAppleSilicon {
 			// 对于 M 系列芯片，尝试获取处理器型号
@@ -88,7 +103,7 @@ func GetSystemInfo() (model.SystemInfo, error) {
 			} else {
 				cpuModel = strings.TrimSpace(cpuModelOutput)
 			}
-			
+
 			// 对于 M 系列芯片，添加 Pro/Max/Ultra 后缀（如果能够确定）
 			if strings.Contains(info.Model, "Pro") {
 				if !strings.Contains(cpuModel, "Pro") {
@@ -113,7 +128,7 @@ func GetSystemInfo() (model.SystemInfo, error) {
 				cpuModel = strings.TrimSpace(cpuModelOutput)
 			}
 		}
-		
+
 		info.CPU = model.CPUInfo{
 			Model: cpuModel,
 			Cores: cores,
@@ -122,12 +137,12 @@ func GetSystemInfo() (model.SystemInfo, error) {
 		// 使用 ghw 获取的 CPU 信息
 		cpuModel := ""
 		cores := 0
-		
+
 		if len(cpuInfo.Processors) > 0 {
 			proc := cpuInfo.Processors[0]
 			cpuModel = proc.Model
 			cores = int(proc.NumCores)
-			
+
 			// 检查是否为 Apple Silicon
 			if strings.Contains(cpuModel, "Apple") || (strings.Contains(info.Model, "Mac") && !strings.Contains(strings.ToLower(info.Model), "intel")) {
 				// 对于 M 系列芯片，可能需要额外处理
@@ -143,7 +158,7 @@ func GetSystemInfo() (model.SystemInfo, error) {
 						}
 					}
 				}
-				
+
 				// 添加 Pro/Max/Ultra 后缀（如果能够确定）
 				if strings.Contains(info.Model, "Pro") {
 					if !strings.Contains(cpuModel, "Pro") {
@@ -160,7 +175,7 @@ func GetSystemInfo() (model.SystemInfo, error) {
 				}
 			}
 		}
-		
+
 		info.CPU = model.CPUInfo{
 			Model: cpuModel,
 			Cores: cores,
@@ -198,7 +213,7 @@ func GetSystemInfo() (model.SystemInfo, error) {
 	blockInfo, err := ghw.Block()
 	if err != nil {
 		log.Printf("Error getting block info with ghw: %v", err)
-		
+
 		// 如果 ghw 失败，回退到 system_profiler
 		diskInfo, err := runCommand("system_profiler", "SPStorageDataType")
 		if err != nil {
@@ -207,18 +222,18 @@ func GetSystemInfo() (model.SystemInfo, error) {
 			// 解析磁盘型号
 			deviceNameRegex := regexp.MustCompile(`Device Name: (.+)`)
 			matches := deviceNameRegex.FindStringSubmatch(diskInfo)
-			
+
 			if len(matches) > 1 {
 				diskModel := strings.TrimSpace(matches[1])
 				diskName := "Unknown"
-				
+
 				// 尝试获取第一个磁盘的 BSD 名称
 				bsdNameRegex := regexp.MustCompile(`BSD Name: (.+)`)
 				bsdMatches := bsdNameRegex.FindStringSubmatch(diskInfo)
 				if len(bsdMatches) > 1 {
 					diskName = strings.TrimSpace(bsdMatches[1])
 				}
-				
+
 				// 添加到磁盘列表
 				info.Disks = append(info.Disks, model.Disk{
 					Name:   diskName,
@@ -235,10 +250,10 @@ func GetSystemInfo() (model.SystemInfo, error) {
 			if disk.IsRemovable || disk.DriveType != ghw.DRIVE_TYPE_HDD && disk.DriveType != ghw.DRIVE_TYPE_SSD {
 				continue
 			}
-			
+
 			// 转换为 GB
 			sizeGB := uint64(disk.SizeBytes / (1024 * 1024 * 1024))
-			
+
 			info.Disks = append(info.Disks, model.Disk{
 				Name:   disk.Name,
 				Size:   sizeGB,
@@ -268,17 +283,17 @@ func GetSystemInfo() (model.SystemInfo, error) {
 func runCommand(command string, args ...string) (string, error) {
 	// 创建命令
 	cmd := exec.Command(command, args...)
-	
+
 	// 捕获标准输出和错误
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	
+
 	// 执行命令
 	err := cmd.Run()
 	if err != nil {
 		return "", fmt.Errorf("command execution failed: %v: %s", err, stderr.String())
 	}
-	
+
 	return stdout.String(), nil
 }
