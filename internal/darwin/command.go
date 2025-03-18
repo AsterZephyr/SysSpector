@@ -37,7 +37,7 @@ func GetSystemInfo() (model.SystemInfo, error) {
 	} else {
 		info.Model = strings.TrimSpace(modelName) // 保存型号标识符
 	}
-	
+
 	// 获取友好的型号名称
 	marketingName, err := runCommand("system_profiler", "SPHardwareDataType")
 	if err != nil {
@@ -48,7 +48,7 @@ func GetSystemInfo() (model.SystemInfo, error) {
 		matches := re.FindStringSubmatch(marketingName)
 		if len(matches) > 1 {
 			// 如果找到了型号名称，更新Model字段，并将原始型号标识符保存到ModelID
-			info.ModelID = info.Model // 保存原始型号标识符
+			info.ModelID = info.Model                  // 保存原始型号标识符
 			info.Model = strings.TrimSpace(matches[1]) // 更新为友好的型号名称
 		}
 	}
@@ -82,7 +82,7 @@ func GetSystemInfo() (model.SystemInfo, error) {
 
 		// 检测是否为 Apple Silicon
 		isAppleSilicon := false
-		
+
 		// 使用sysctl检查CPU架构
 		archOutput, err := runCommand("sysctl", "-n", "hw.machine")
 		if err == nil {
@@ -90,7 +90,7 @@ func GetSystemInfo() (model.SystemInfo, error) {
 			// arm64表示Apple Silicon，x86_64表示Intel
 			isAppleSilicon = arch == "arm64"
 		}
-		
+
 		// 如果sysctl失败，尝试使用其他方法
 		if err != nil {
 			// 检查是否存在M系列芯片特有的sysctl键
@@ -160,7 +160,7 @@ func GetSystemInfo() (model.SystemInfo, error) {
 
 			// 检查是否为 Apple Silicon
 			isAppleSilicon := false
-			
+
 			// 使用sysctl检查CPU架构
 			archOutput, err := runCommand("sysctl", "-n", "hw.machine")
 			if err == nil {
@@ -168,7 +168,7 @@ func GetSystemInfo() (model.SystemInfo, error) {
 				// arm64表示Apple Silicon，x86_64表示Intel
 				isAppleSilicon = arch == "arm64"
 			}
-			
+
 			// 如果sysctl失败，尝试使用其他方法
 			if err != nil {
 				// 检查是否存在M系列芯片特有的sysctl键
@@ -306,6 +306,24 @@ func GetSystemInfo() (model.SystemInfo, error) {
 		if len(matches) > 1 {
 			info.UUID = matches[1]
 		}
+	}
+
+	// 收集动态系统信息
+	err = GetDynamicSystemInfo(&info)
+	if err != nil {
+		log.Printf("Error getting dynamic system info: %v", err)
+	}
+
+	// 收集网络信息
+	err = GetNetworkInfo(&info)
+	if err != nil {
+		log.Printf("Error getting network info: %v", err)
+	}
+
+	// 收集系统和软件信息
+	err = GetSystemSoftwareInfo(&info)
+	if err != nil {
+		log.Printf("Error getting system and software info: %v", err)
 	}
 
 	return info, nil
