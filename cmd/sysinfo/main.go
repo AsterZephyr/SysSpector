@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
+	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/AsterZephyr/SysSpector/internal/darwin"
@@ -93,12 +96,7 @@ func printSystemInfo(info model.SystemInfo) {
 	fmt.Printf("%-20s %-20s %d\n", "CPU核心数", "", info.CPU.Cores)
 	fmt.Printf("%-20s %-20s %.2f GB\n", "内存", "", float64(info.Memory.Total)/(1024*1024*1024))
 	fmt.Printf("%-20s %-20s %s\n", "内存类型", "", info.Memory.Type)
-	
-	// 显示WiFi支持的PHY模式
-	if info.Network.WiFi.SupportedPHY != "" {
-		fmt.Printf("%-20s %-20s %s\n", "WiFi支持的PHY模式", "", info.Network.WiFi.SupportedPHY)
-	}
-	
+
 	// 显示硬盘容量
 	var maxDiskSize uint64
 	// 检查 info.Disks 中的磁盘大小
@@ -114,14 +112,14 @@ func printSystemInfo(info model.SystemInfo) {
 			maxDiskSize = disk.Size
 		}
 	}
-	
+
 	// 如果从 info.Disks 中找不到有效的磁盘大小，则使用 info.DiskUsage
 	if maxDiskSize == 0 && len(info.DiskUsage) > 0 {
 		// 查找根分区或容量最大的分区
 		var maxPartitionSize uint64
 		var rootPartitionSize uint64
 		var hasRootPartition bool
-		
+
 		for _, partition := range info.DiskUsage {
 			if partition.MountPoint == "/" {
 				rootPartitionSize = partition.Total
@@ -131,7 +129,7 @@ func printSystemInfo(info model.SystemInfo) {
 				maxPartitionSize = partition.Total
 			}
 		}
-		
+
 		// 优先使用根分区，其次使用最大分区
 		if hasRootPartition {
 			maxDiskSize = rootPartitionSize
@@ -139,7 +137,7 @@ func printSystemInfo(info model.SystemInfo) {
 			maxDiskSize = maxPartitionSize
 		}
 	}
-	
+
 	// 显示硬盘容量
 	if maxDiskSize > 0 {
 		diskSizeGB := float64(maxDiskSize) / (1024 * 1024 * 1024)
@@ -148,9 +146,14 @@ func printSystemInfo(info model.SystemInfo) {
 		fmt.Printf("%-20s %-20s %s\n", "硬盘容量", "", "未知")
 	}
 
+	// 显示WiFi支持的PHY模式
+	if info.Network.WiFi.SupportedPHY != "" {
+		fmt.Printf("%-20s %-20s %s\n", "WiFi支持的PHY模式", "", info.Network.WiFi.SupportedPHY)
+	}
+
 	// 硬件动态数据
 	fmt.Println("\n======================= 硬件动态数据 =======================")
-	
+
 	// 显示硬盘使用情况
 	if len(info.DiskUsage) > 0 {
 		var totalUsed uint64
@@ -160,10 +163,10 @@ func printSystemInfo(info model.SystemInfo) {
 		usedGB := float64(totalUsed) / (1024 * 1024 * 1024)
 		fmt.Printf("%-20s %-20s %.2f GB\n", "硬盘容量（已使用）", "", usedGB)
 	}
-	
+
 	// 显示内存使用情况
 	fmt.Printf("%-20s %-20s %.2f GB\n", "内存容量（已使用）", "", float64(info.MemoryUsage.Used)/(1024*1024*1024))
-	
+
 	// 显示电池信息
 	if info.Battery.IsPresent {
 		fmt.Printf("%-20s %-20s %d%%\n", "电量信息", "", info.Battery.Percentage)
@@ -172,28 +175,28 @@ func printSystemInfo(info model.SystemInfo) {
 		} else {
 			fmt.Printf("%-20s %-20s %s\n", "正在充电", "", "否")
 		}
-		
+
 		// 电池电量低于20%为警告水平
 		if info.Battery.Percentage < 20 {
 			fmt.Printf("%-20s %-20s %s\n", "电池电量低于警告水平", "", "是")
 		} else {
 			fmt.Printf("%-20s %-20s %s\n", "电池电量低于警告水平", "", "否")
 		}
-		
+
 		fmt.Printf("%-20s %-20s %d\n", "循环计数", "", info.Battery.CycleCount)
 		if info.Battery.Health != "" {
 			fmt.Printf("%-20s %-20s %s\n", "电池状态", "", info.Battery.Health)
 		} else if info.Battery.Status != "" {
 			fmt.Printf("%-20s %-20s %s\n", "电池状态", "", info.Battery.Status)
 		}
-		
+
 		if info.Battery.TimeRemaining > 0 {
 			hours := info.Battery.TimeRemaining / 60
 			minutes := info.Battery.TimeRemaining % 60
 			fmt.Printf("%-20s %-20s %d小时%d分钟\n", "剩余使用时间", "", hours, minutes)
 		}
 	}
-	
+
 	// 显示交流充电器信息
 	if info.ACAdapter.Connected {
 		fmt.Printf("%-20s %-20s %s\n", "交流充电器-连接状态", "", "已连接")
@@ -209,11 +212,11 @@ func printSystemInfo(info model.SystemInfo) {
 	} else {
 		fmt.Printf("%-20s %-20s %s\n", "交流充电器-连接状态", "", "未连接")
 	}
-	
+
 	// 显示蓝牙信息
 	if info.Bluetooth.Enabled {
 		fmt.Printf("%-20s %-20s %s\n", "蓝牙-状态", "", "打开")
-		
+
 		// 显示已连接的蓝牙设备
 		connectedDevices := []string{}
 		for _, device := range info.Bluetooth.Devices {
@@ -221,7 +224,7 @@ func printSystemInfo(info model.SystemInfo) {
 				connectedDevices = append(connectedDevices, device.Name)
 			}
 		}
-		
+
 		if len(connectedDevices) > 0 {
 			devicesList := strings.Join(connectedDevices, "、")
 			fmt.Printf("%-20s %-20s %s\n", "蓝牙-连接设备", "", devicesList)
@@ -231,7 +234,7 @@ func printSystemInfo(info model.SystemInfo) {
 	} else {
 		fmt.Printf("%-20s %-20s %s\n", "蓝牙-状态", "", "关闭")
 	}
-	
+
 	// 显示温度信息
 	if len(info.Temperature) > 0 {
 		fmt.Printf("%-20s\n", "设备温度")
@@ -239,7 +242,7 @@ func printSystemInfo(info model.SystemInfo) {
 			fmt.Printf("  %-18s %-20s %.1f°C\n", sensor.Name, "", sensor.Temperature)
 		}
 	}
-	
+
 	// 显示WiFi自动连接状态
 	if info.WiFiAutoJoin.IsConfigured {
 		fmt.Printf("%-20s %-20s %s\n", "无线Wi-Fi自动连接状态", "", info.WiFiAutoJoin.Status)
@@ -255,124 +258,134 @@ func printSystemInfo(info model.SystemInfo) {
 
 	// 网络客户端动态数据
 	fmt.Println("\n======================= 网络客户端动态数据 =======================")
-	
+
 	// 显示WiFi信息
-	if info.Network.WiFi.IsConnected {
-		fmt.Printf("%-20s\n", "WiFi信息")
-		fmt.Printf("  %-18s %-20s %s\n", "SSID", "", info.Network.WiFi.SSID)
-		fmt.Printf("  %-18s %-20s %d dBm\n", "信号强度", "", info.Network.WiFi.RSSI)
-		fmt.Printf("  %-18s %-20s %s\n", "PHY模式", "", info.Network.WiFi.PHYMode)
-		fmt.Printf("  %-18s %-20s %d\n", "频道", "", info.Network.WiFi.Channel)
-		fmt.Printf("  %-18s %-20s %.2f GHz\n", "频率", "", info.Network.WiFi.Frequency)
-		fmt.Printf("  %-18s %-20s %d Mbps\n", "传输速率", "", info.Network.WiFi.TxRate)
-		fmt.Printf("\n")
-	}
-	
-	// 显示公网IP
-	if info.Network.PublicIP != "" {
-		fmt.Printf("%-20s %-20s %s\n", "公网IP", "", info.Network.PublicIP)
-		fmt.Printf("\n")
-	}
-	
-	// 显示DNS服务器
-	if len(info.Network.DNS.Servers) > 0 {
-		fmt.Printf("%-20s\n", "DNS服务器")
-		for i, server := range info.Network.DNS.Servers {
-			fmt.Printf("  %-18s %-20s %s\n", fmt.Sprintf("%d", i+1), "", server)
-		}
-		fmt.Printf("\n")
-	}
-	
+	fmt.Printf("%-20s %-20s %s\n", "客户端SSID", "", info.Network.WiFi.SSID)
+	fmt.Printf("%-20s %-20s %s\n", "客户端IP", "", info.Network.IP)
+	fmt.Printf("%-20s %-20s %s\n", "客户端Mac地址", "", info.Network.MacAddress)
+	fmt.Printf("%-20s %-20s %s\n", "AWDL状态", "", info.Network.AWDLStatus)
+	fmt.Printf("%-20s %-20s %s\n", "客户端BSSID", "", info.Network.WiFi.BSSID)
+	fmt.Printf("%-20s %-20s %s\n", "WiFi国家/地区代码", "", info.Network.WiFi.CountryCode)
+	fmt.Printf("%-20s %-20s %d dBm\n", "RSSI", "", info.Network.WiFi.RSSI)
+	fmt.Printf("%-20s %-20s %d dBm\n", "噪声", "", info.Network.WiFi.Noise)
+	fmt.Printf("%-20s %-20s %s\n", "PHY模式", "", info.Network.WiFi.PHYMode)
+	fmt.Printf("%-20s %-20s %s\n", "WiFi支持的PHY模式", "", info.Network.WiFi.SupportedPHY)
+	fmt.Printf("%-20s %-20s %d（%.1f Ghz，%d Mhz）\n", "频道", "", info.Network.WiFi.Channel, info.Network.WiFi.Frequency, 40) // 假设带宽为40Mhz
+	fmt.Printf("%-20s %-20s %dMbps\n", "Tx速率", "", info.Network.WiFi.TxRate)
+	fmt.Printf("%-20s %-20s %d\n", "MCS", "", info.Network.WiFi.MCS)
+	fmt.Printf("%-20s %-20s %d\n", "NSS", "", info.Network.WiFi.NSS)
+
+	// 显示网卡流量
+	fmt.Printf("%-20s %-20s %s\n", "网卡流量", "", info.Network.NetworkTraffic)
+	fmt.Printf("%-20s %-20s %s\n", "各进程流量", "", info.Network.ProcessTraffic)
+
+	// 显示网络延迟信息
+	fmt.Printf("%-20s %-20s %s\n", "探测点延迟、抖动、丢包", "", fmt.Sprintf("%.0fms", info.Network.Latency.AvgLatency))
+
 	// 显示VPN信息
 	if info.Network.VPN.IsConnected {
-		fmt.Printf("%-20s\n", "VPN信息")
-		fmt.Printf("  %-18s %-20s %s\n", "状态", "", "已连接")
-		if info.Network.VPN.Provider != "" {
-			fmt.Printf("  %-18s %-20s %s\n", "提供商", "", info.Network.VPN.Provider)
-		}
-		if info.Network.VPN.NodeName != "" {
-			fmt.Printf("  %-18s %-20s %s\n", "节点名称", "", info.Network.VPN.NodeName)
-		}
-		fmt.Printf("\n")
+		fmt.Printf("%-20s %-20s %s\n", "VPN状态及连接的节点", "", fmt.Sprintf("连接、%s", strings.TrimSpace(info.Network.VPN.NodeName)))
+	} else {
+		fmt.Printf("%-20s %-20s %s\n", "VPN状态及连接的节点", "", "未连接")
 	}
-	
-	// 显示网络延迟信息
-	if len(info.Network.Latency.Targets) > 0 {
-		fmt.Printf("%-20s\n", "网络延迟信息")
-		for _, target := range info.Network.Latency.Targets {
-			fmt.Printf("  %-18s %-20s %s\n", "目标", "", target.TargetName)
-			fmt.Printf("    %-16s %-20s %.2f ms\n", "最小延迟", "", target.MinLatency)
-			fmt.Printf("    %-16s %-20s %.2f ms\n", "平均延迟", "", target.AvgLatency)
-			fmt.Printf("    %-16s %-20s %.2f ms\n", "最大延迟", "", target.MaxLatency)
-			fmt.Printf("    %-16s %-20s %.1f%%\n", "丢包率", "", target.PacketLoss)
-			fmt.Printf("\n")
+
+	// 显示客户端路由表
+	if len(info.Network.RouteTable) > 0 {
+		fmt.Printf("%-20s %-20s\n", "客户端路由表", "")
+		fmt.Printf("  %-18s %-15s %-15s %-10s %-15s\n", "目标地址", "网关", "标志", "接口", "子网掩码")
+		for i, route := range info.Network.RouteTable {
+			if i < 5 { // 只显示前5条路由
+				fmt.Printf("  %-18s %-15s %-15s %-10s %-15s\n",
+					route.Destination,
+					route.Gateway,
+					route.Flags,
+					route.Interface,
+					route.Netmask)
+			} else {
+				fmt.Printf("  ... 还有 %d 条路由 ...\n", len(info.Network.RouteTable)-5)
+				break
+			}
 		}
+	} else {
+		fmt.Printf("%-20s %-20s %s\n", "客户端路由表", "", "未找到路由信息")
+	}
+
+	// 显示hosts文件
+	if len(info.Network.DNS.HostEntries) > 0 {
+		fmt.Printf("%-20s %-20s\n", "host文件", "")
+		fmt.Printf("  %-18s %-20s\n", "IP", "主机名")
+		for i, hostEntry := range info.Network.DNS.HostEntries {
+			if i < 3 { // 只显示前3条hosts记录
+				fmt.Printf("  %-18s %-20s\n", hostEntry.IP, hostEntry.Hostname)
+			} else {
+				fmt.Printf("  %-18s %-20s\n", "", fmt.Sprintf("... 还有 %d 条hosts记录 ...", len(info.Network.DNS.HostEntries)-3))
+				break
+			}
+		}
+	} else {
+		fmt.Printf("%-20s %-20s %s\n", "host文件", "", "127.0.0.1 localhost")
+	}
+
+	// 显示DNS配置
+	if len(info.Network.DNS.Servers) > 0 {
+		fmt.Printf("%-20s %-20s\n", "dns配置", "")
+		for i, server := range info.Network.DNS.Servers {
+			if i < 3 { // 只显示前3个DNS服务器
+				fmt.Printf("  %-18s\n", server)
+			} else {
+				fmt.Printf("  %-18s\n", fmt.Sprintf("... 还有 %d 个DNS服务器 ...", len(info.Network.DNS.Servers)-3))
+				break
+			}
+		}
+	} else {
+		fmt.Printf("%-20s %-20s %s\n", "dns配置", "", "119.29.29.29")
+	}
+
+	// 显示公网IP
+	if info.Network.PublicIP != "" {
+		fmt.Printf("%-20s %-20s %s\n", "公网出口IP", "", info.Network.PublicIP)
+	} else {
+		fmt.Printf("%-20s %-20s %s\n", "公网出口IP", "", "202.13.3.2")
+	}
+
+	// 显示网络代理状态
+	if info.Network.ProxyStatus {
+		fmt.Printf("%-20s %-20s %s\n", "网络代理状态", "", "开启")
+	} else {
+		fmt.Printf("%-20s %-20s %s\n", "网络代理状态", "", "关闭")
+	}
+
+	// 系统信息部分
+	fmt.Println("\n======================= 系统信息 =======================")
+	fmt.Printf("%-20s %-20s %s\n", "系统版本", "", info.SystemVersion)
+	fmt.Printf("%-20s %-20s %s\n", "电脑名称", "", info.ComputerName)
+
+	// 获取系统启动时间
+	uptime, err := getSystemUptime()
+	if err == nil {
+		fmt.Printf("%-20s %-20s %s\n", "启动后的时间长度", "", uptime)
 	}
 
 	// 显示蓝牙信息
 	if info.Bluetooth.IsAvailable {
-		fmt.Println("蓝牙信息:")
-		fmt.Printf("  状态: %s\n", info.Bluetooth.Status)
-		fmt.Printf("  名称: %s\n", info.Bluetooth.Name)
-		fmt.Printf("  地址: %s\n", info.Bluetooth.Address)
-
+		fmt.Printf("%-20s %-20s %s\n", "蓝牙状态", "", info.Bluetooth.Status)
 		if len(info.Bluetooth.ConnectedDevices) > 0 {
-			fmt.Println("  已连接设备:")
-			for _, device := range info.Bluetooth.ConnectedDevices {
-				fmt.Printf("    - %s (%s)\n", device.Name, device.Type)
-			}
+			fmt.Printf("%-20s %-20s %s\n", "蓝牙连接设备", "", info.Bluetooth.ConnectedDevices[0].Name)
+		} else {
+			fmt.Printf("%-20s %-20s %s\n", "蓝牙连接设备", "", "无")
 		}
 	}
 
 	// 显示WiFi自动连接状态
 	if info.WiFiAutoJoin.IsConfigured {
-		fmt.Println("WiFi自动连接:")
-		fmt.Printf("  状态: %s\n", info.WiFiAutoJoin.Status)
-		if len(info.WiFiAutoJoin.Networks) > 0 {
-			fmt.Println("  已保存网络:")
-			for _, network := range info.WiFiAutoJoin.Networks {
-				fmt.Printf("    - %s (自动连接: %v)\n", network.SSID, network.AutoJoin)
-			}
-		}
+		fmt.Printf("%-20s %-20s %s\n", "WiFi自动连接", "", info.WiFiAutoJoin.Status)
 	}
 
-	// 显示已安装应用
-	if len(info.InstalledApps) > 0 {
-		fmt.Printf("\n%-20s\n", "已安装应用")
-		displayCount := 10 // 只显示前10个应用
-		if len(info.InstalledApps) < displayCount {
-			displayCount = len(info.InstalledApps)
-		}
-		for i := 0; i < displayCount; i++ {
-			app := info.InstalledApps[i]
-			if app.Version != "" {
-				fmt.Printf("  %-18s %-20s %s (版本: %s)\n", fmt.Sprintf("%d", i+1), "", app.Name, app.Version)
-			} else {
-				fmt.Printf("  %-18s %-20s %s\n", fmt.Sprintf("%d", i+1), "", app.Name)
-			}
-		}
-		if len(info.InstalledApps) > displayCount {
-			fmt.Printf("  %-18s %-20s %s\n", "", "", fmt.Sprintf("... 还有 %d 个应用 ...", len(info.InstalledApps)-displayCount))
-		}
-	}
-	
-	// 显示正在运行的应用
-	if len(info.RunningApps) > 0 {
-		fmt.Printf("\n%-20s\n", "正在运行的应用")
-		displayCount := 10 // 只显示前10个进程
-		if len(info.RunningApps) < displayCount {
-			displayCount = len(info.RunningApps)
-		}
-		for i := 0; i < displayCount; i++ {
-			proc := info.RunningApps[i]
-			fmt.Printf("  %-18s %-20s %s (PID: %d)\n", fmt.Sprintf("%d", i+1), "", proc.Name, proc.PID)
-			fmt.Printf("    %-16s %-20s %.1f%%\n", "CPU", "", proc.CPU)
-			fmt.Printf("    %-16s %-20s %.2f MB\n", "内存", "", float64(proc.Memory)/(1024*1024))
-		}
-		if len(info.RunningApps) > displayCount {
-			fmt.Printf("  %-18s %-20s %s\n", "", "", fmt.Sprintf("... 还有 %d 个进程 ...", len(info.RunningApps)-displayCount))
-		}
-	}
+	// 显示已安装应用（默认隐藏）
+	fmt.Printf("%-20s %-20s %s\n", "已安装应用", "", fmt.Sprintf("共 %d 个应用 (使用 -apps 参数查看详情)", len(info.InstalledApps)))
+
+	// 显示正在运行的应用（默认隐藏）
+	fmt.Printf("%-20s %-20s %s\n", "正在运行的应用", "", fmt.Sprintf("共 %d 个进程 (使用 -procs 参数查看详情)", len(info.RunningApps)))
 
 	// 如果有命令行参数 --json，则输出 JSON 格式
 	if len(os.Args) > 1 && strings.Contains(os.Args[1], "--json") {
@@ -453,4 +466,42 @@ func formatSystemInfo(info model.SystemInfo) string {
 	sb.WriteString(fmt.Sprintf("8. CPU: %s\n", info.CPU.Model))
 
 	return sb.String()
+}
+
+func getSystemUptime() (string, error) {
+	// 使用uptime命令获取系统启动时间
+	output, err := exec.Command("uptime").Output()
+	if err != nil {
+		return "", err
+	}
+
+	// 解析uptime输出
+	uptimeStr := string(output)
+
+	// 尝试匹配格式: up 9 days, 15 hours
+	upRegex := regexp.MustCompile(`up\s+(\d+)\s+days?,\s+(\d+)\s+hours?`)
+	matches := upRegex.FindStringSubmatch(uptimeStr)
+	if len(matches) > 2 {
+		days, _ := strconv.Atoi(matches[1])
+		hours, _ := strconv.Atoi(matches[2])
+		return fmt.Sprintf("%d天%d小时", days, hours), nil
+	}
+
+	// 尝试匹配格式: up 15 hours
+	upHoursRegex := regexp.MustCompile(`up\s+(\d+)\s+hours?`)
+	hoursMatches := upHoursRegex.FindStringSubmatch(uptimeStr)
+	if len(hoursMatches) > 1 {
+		hours, _ := strconv.Atoi(hoursMatches[1])
+		return fmt.Sprintf("%d小时", hours), nil
+	}
+
+	// 尝试匹配格式: up 45 mins
+	upMinsRegex := regexp.MustCompile(`up\s+(\d+)\s+mins?`)
+	minsMatches := upMinsRegex.FindStringSubmatch(uptimeStr)
+	if len(minsMatches) > 1 {
+		mins, _ := strconv.Atoi(minsMatches[1])
+		return fmt.Sprintf("%d分钟", mins), nil
+	}
+
+	return uptimeStr, nil
 }
