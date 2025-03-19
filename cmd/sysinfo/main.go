@@ -77,186 +77,300 @@ func main() {
 
 // printSystemInfo 格式化输出系统信息
 func printSystemInfo(info model.SystemInfo) {
-	fmt.Println("======================= 系统信息 =======================")
-	fmt.Printf("主机名: %s\n", info.Hostname)
-	fmt.Printf("操作系统: %s\n", info.OS)
-	fmt.Printf("系统版本: %s\n", info.SystemVersion)
-	fmt.Printf("电脑名称: %s\n", info.ComputerName)
-	fmt.Printf("启动时间: %s\n", info.UpTime)
-	fmt.Printf("型号: %s\n", info.Model)
+	// 硬件基础数据
+	fmt.Println("======================= 硬件基础数据 =======================")
+	fmt.Printf("%-20s %-20s %s\n", "主机名", "", info.Hostname)
+	fmt.Printf("%-20s %-20s %s\n", "操作系统", "", info.OS)
+	fmt.Printf("%-20s %-20s %s\n", "系统版本", "", info.SystemVersion)
+	fmt.Printf("%-20s %-20s %s\n", "电脑名称", "", info.ComputerName)
+	fmt.Printf("%-20s %-20s %s\n", "型号名称", "", info.Model)
 	if info.ModelID != "" {
-		fmt.Printf("型号标识符: %s\n", info.ModelID)
+		fmt.Printf("%-20s %-20s %s\n", "型号标识符", "", info.ModelID)
 	}
-	fmt.Printf("序列号: %s\n", info.SerialNumber)
-	fmt.Printf("UUID: %s\n", info.UUID)
-
-	fmt.Println("\n======================= CPU信息 =======================")
-	fmt.Printf("型号: %s\n", info.CPU.Model)
-	fmt.Printf("核心数: %d\n", info.CPU.Cores)
-
-	fmt.Println("\n======================= 内存信息 =======================")
-	fmt.Printf("总容量: %.2f GB\n", float64(info.Memory.Total)/(1024*1024*1024))
-	fmt.Printf("类型: %s\n", info.Memory.Type)
-
-	// 显示内存使用情况
-	if info.MemoryUsage.Total > 0 {
-		fmt.Println("\n======================= 内存使用情况 =======================")
-		fmt.Printf("总容量: %.2f GB\n", float64(info.MemoryUsage.Total)/(1024*1024*1024))
-		fmt.Printf("已使用: %.2f GB (%.1f%%)\n", 
-			float64(info.MemoryUsage.Used)/(1024*1024*1024), 
-			float64(info.MemoryUsage.Used)/float64(info.MemoryUsage.Total)*100)
-		fmt.Printf("空闲: %.2f GB\n", float64(info.MemoryUsage.Free)/(1024*1024*1024))
-		fmt.Printf("活跃: %.2f GB\n", float64(info.MemoryUsage.Active)/(1024*1024*1024))
-		fmt.Printf("不活跃: %.2f GB\n", float64(info.MemoryUsage.Inactive)/(1024*1024*1024))
-		fmt.Printf("已缓存: %.2f GB\n", float64(info.MemoryUsage.Cached)/(1024*1024*1024))
+	fmt.Printf("%-20s %-20s %s\n", "序列号", "", info.SerialNumber)
+	fmt.Printf("%-20s %-20s %s\n", "硬件UUID", "", info.UUID)
+	fmt.Printf("%-20s %-20s %s\n", "处理器名称", "", info.CPU.Model)
+	fmt.Printf("%-20s %-20s %d\n", "CPU核心数", "", info.CPU.Cores)
+	fmt.Printf("%-20s %-20s %.2f GB\n", "内存", "", float64(info.Memory.Total)/(1024*1024*1024))
+	fmt.Printf("%-20s %-20s %s\n", "内存类型", "", info.Memory.Type)
+	
+	// 显示WiFi支持的PHY模式
+	if info.Network.WiFi.SupportedPHY != "" {
+		fmt.Printf("%-20s %-20s %s\n", "WiFi支持的PHY模式", "", info.Network.WiFi.SupportedPHY)
 	}
-
-	fmt.Println("\n======================= 磁盘信息 =======================")
-	for i, disk := range info.Disks {
-		fmt.Printf("磁盘 %d:\n", i+1)
-		fmt.Printf("  名称: %s\n", disk.Name)
-		fmt.Printf("  型号: %s\n", disk.Model)
-		fmt.Printf("  容量: %d GB\n", disk.Size)
-		if disk.Serial != "" {
-			fmt.Printf("  序列号: %s\n", disk.Serial)
+	
+	// 显示硬盘容量
+	var maxDiskSize uint64
+	// 检查 info.Disks 中的磁盘大小
+	for _, disk := range info.Disks {
+		// 如果 disk.Size 小于 1000，可能是以 GB 为单位
+		if disk.Size < 1000 && disk.Size > 0 {
+			// 转换为字节
+			sizeInBytes := disk.Size * 1024 * 1024 * 1024
+			if sizeInBytes > maxDiskSize {
+				maxDiskSize = sizeInBytes
+			}
+		} else if disk.Size > maxDiskSize {
+			maxDiskSize = disk.Size
 		}
 	}
+	
+	// 如果从 info.Disks 中找不到有效的磁盘大小，则使用 info.DiskUsage
+	if maxDiskSize == 0 && len(info.DiskUsage) > 0 {
+		// 查找根分区或容量最大的分区
+		var maxPartitionSize uint64
+		var rootPartitionSize uint64
+		var hasRootPartition bool
+		
+		for _, partition := range info.DiskUsage {
+			if partition.MountPoint == "/" {
+				rootPartitionSize = partition.Total
+				hasRootPartition = true
+			}
+			if partition.Total > maxPartitionSize {
+				maxPartitionSize = partition.Total
+			}
+		}
+		
+		// 优先使用根分区，其次使用最大分区
+		if hasRootPartition {
+			maxDiskSize = rootPartitionSize
+		} else {
+			maxDiskSize = maxPartitionSize
+		}
+	}
+	
+	// 显示硬盘容量
+	if maxDiskSize > 0 {
+		diskSizeGB := float64(maxDiskSize) / (1024 * 1024 * 1024)
+		fmt.Printf("%-20s %-20s %.2f GB\n", "硬盘容量", "", diskSizeGB)
+	} else {
+		fmt.Printf("%-20s %-20s %s\n", "硬盘容量", "", "未知")
+	}
 
-	// 显示磁盘使用情况
+	// 硬件动态数据
+	fmt.Println("\n======================= 硬件动态数据 =======================")
+	
+	// 显示硬盘使用情况
 	if len(info.DiskUsage) > 0 {
-		fmt.Println("\n======================= 磁盘使用情况 =======================")
-		for _, usage := range info.DiskUsage {
-			fmt.Printf("挂载点: %s\n", usage.MountPoint)
-			fmt.Printf("  文件系统: %s\n", usage.Filesystem)
-			fmt.Printf("  总容量: %.2f GB\n", float64(usage.Total)/(1024*1024*1024))
-			fmt.Printf("  已使用: %.2f GB (%.1f%%)\n", 
-				float64(usage.Used)/(1024*1024*1024), 
-				float64(usage.Used)/float64(usage.Total)*100)
-			fmt.Printf("  可用: %.2f GB\n", float64(usage.Free)/(1024*1024*1024))
-			fmt.Println()
+		var totalUsed uint64
+		for _, partition := range info.DiskUsage {
+			totalUsed += partition.Used
 		}
+		usedGB := float64(totalUsed) / (1024 * 1024 * 1024)
+		fmt.Printf("%-20s %-20s %.2f GB\n", "硬盘容量（已使用）", "", usedGB)
 	}
-
+	
+	// 显示内存使用情况
+	fmt.Printf("%-20s %-20s %.2f GB\n", "内存容量（已使用）", "", float64(info.MemoryUsage.Used)/(1024*1024*1024))
+	
 	// 显示电池信息
 	if info.Battery.IsPresent {
-		fmt.Println("======================= 电池信息 =======================")
-		fmt.Printf("电量: %.1f%%\n", info.Battery.Percentage)
-		fmt.Printf("状态: %s\n", info.Battery.Status)
-		fmt.Printf("健康度: %.1f%%\n", info.Battery.Health)
-		fmt.Printf("循环次数: %d\n", info.Battery.CycleCount)
+		fmt.Printf("%-20s %-20s %d%%\n", "电量信息", "", info.Battery.Percentage)
+		if info.Battery.IsCharging {
+			fmt.Printf("%-20s %-20s %s\n", "正在充电", "", "是")
+		} else {
+			fmt.Printf("%-20s %-20s %s\n", "正在充电", "", "否")
+		}
+		
+		// 电池电量低于20%为警告水平
+		if info.Battery.Percentage < 20 {
+			fmt.Printf("%-20s %-20s %s\n", "电池电量低于警告水平", "", "是")
+		} else {
+			fmt.Printf("%-20s %-20s %s\n", "电池电量低于警告水平", "", "否")
+		}
+		
+		fmt.Printf("%-20s %-20s %d\n", "循环计数", "", info.Battery.CycleCount)
+		if info.Battery.Health != "" {
+			fmt.Printf("%-20s %-20s %s\n", "电池状态", "", info.Battery.Health)
+		} else if info.Battery.Status != "" {
+			fmt.Printf("%-20s %-20s %s\n", "电池状态", "", info.Battery.Status)
+		}
+		
 		if info.Battery.TimeRemaining > 0 {
 			hours := info.Battery.TimeRemaining / 60
 			minutes := info.Battery.TimeRemaining % 60
-			fmt.Printf("剩余时间: %d小时%d分钟\n", hours, minutes)
+			fmt.Printf("%-20s %-20s %d小时%d分钟\n", "剩余使用时间", "", hours, minutes)
 		}
 	}
-
+	
 	// 显示交流充电器信息
-	if info.ACAdapter.IsConnected {
-		fmt.Println("\n======================= 充电器信息 =======================")
-		fmt.Printf("连接状态: %s\n", "已连接")
-		fmt.Printf("瓦数: %d W\n", info.ACAdapter.Wattage)
+	if info.ACAdapter.Connected {
+		fmt.Printf("%-20s %-20s %s\n", "交流充电器-连接状态", "", "已连接")
+		if info.ACAdapter.SerialNum != "" {
+			fmt.Printf("%-20s %-20s %s\n", "交流充电器-序列号", "", info.ACAdapter.SerialNum)
+		}
+		if info.ACAdapter.Name != "" {
+			fmt.Printf("%-20s %-20s %s\n", "交流充电器-名称", "", info.ACAdapter.Name)
+		}
+		if info.ACAdapter.Wattage > 0 {
+			fmt.Printf("%-20s %-20s %dW\n", "交流充电器-功率", "", info.ACAdapter.Wattage)
+		}
+	} else {
+		fmt.Printf("%-20s %-20s %s\n", "交流充电器-连接状态", "", "未连接")
 	}
-
+	
 	// 显示蓝牙信息
-	if info.Bluetooth.IsAvailable {
-		fmt.Println("\n======================= 蓝牙信息 =======================")
-		fmt.Printf("状态: %s\n", info.Bluetooth.Status)
-		fmt.Printf("名称: %s\n", info.Bluetooth.Name)
-		fmt.Printf("地址: %s\n", info.Bluetooth.Address)
+	if info.Bluetooth.Enabled {
+		fmt.Printf("%-20s %-20s %s\n", "蓝牙-状态", "", "打开")
 		
-		if len(info.Bluetooth.ConnectedDevices) > 0 {
-			fmt.Println("已连接设备:")
-			for _, device := range info.Bluetooth.ConnectedDevices {
-				fmt.Printf("  - %s (%s)\n", device.Name, device.Type)
+		// 显示已连接的蓝牙设备
+		connectedDevices := []string{}
+		for _, device := range info.Bluetooth.Devices {
+			if device.Connected {
+				connectedDevices = append(connectedDevices, device.Name)
 			}
 		}
+		
+		if len(connectedDevices) > 0 {
+			devicesList := strings.Join(connectedDevices, "、")
+			fmt.Printf("%-20s %-20s %s\n", "蓝牙-连接设备", "", devicesList)
+		} else {
+			fmt.Printf("%-20s %-20s %s\n", "蓝牙-连接设备", "", "未找到已连接设备")
+		}
+	} else {
+		fmt.Printf("%-20s %-20s %s\n", "蓝牙-状态", "", "关闭")
 	}
-
+	
 	// 显示温度信息
 	if len(info.Temperature) > 0 {
-		fmt.Println("\n======================= 温度信息 =======================")
-		for _, temp := range info.Temperature {
-			fmt.Printf("%s: %.1f°C\n", temp.Sensor, temp.Value)
+		fmt.Printf("%-20s\n", "设备温度")
+		for _, sensor := range info.Temperature {
+			fmt.Printf("  %-18s %-20s %.1f°C\n", sensor.Name, "", sensor.Temperature)
 		}
 	}
-
+	
 	// 显示WiFi自动连接状态
 	if info.WiFiAutoJoin.IsConfigured {
-		fmt.Println("\n======================= WiFi自动连接 =======================")
-		fmt.Printf("状态: %s\n", info.WiFiAutoJoin.Status)
+		fmt.Printf("%-20s %-20s %s\n", "无线Wi-Fi自动连接状态", "", info.WiFiAutoJoin.Status)
 		if len(info.WiFiAutoJoin.Networks) > 0 {
-			fmt.Println("已保存网络:")
-			for _, network := range info.WiFiAutoJoin.Networks {
-				fmt.Printf("  - %s (自动连接: %v)\n", network.SSID, network.AutoJoin)
-			}
-		}
-	}
-
-	// 显示网络信息
-	if info.Network.WiFi.IsConnected {
-		fmt.Println("\n======================= WiFi信息 =======================")
-		fmt.Printf("SSID: %s\n", info.Network.WiFi.SSID)
-		fmt.Printf("BSSID: %s\n", info.Network.WiFi.BSSID)
-		fmt.Printf("信号强度: %d dBm\n", info.Network.WiFi.SignalStrength)
-		fmt.Printf("频道: %d\n", info.Network.WiFi.Channel)
-		fmt.Printf("频率: %.1f GHz\n", info.Network.WiFi.Frequency)
-		fmt.Printf("速率: %d Mbps\n", info.Network.WiFi.TxRate)
-	}
-
-	if len(info.Network.Interfaces) > 0 {
-		fmt.Println("\n======================= 网络接口 =======================")
-		for _, iface := range info.Network.Interfaces {
-			fmt.Printf("接口: %s\n", iface.Name)
-			fmt.Printf("  MAC地址: %s\n", iface.MACAddress)
-			fmt.Printf("  状态: %s\n", iface.Status)
-			
-			if len(iface.IPAddresses) > 0 {
-				fmt.Println("  IP地址:")
-				for _, ip := range iface.IPAddresses {
-					fmt.Printf("    - %s\n", ip)
+			fmt.Printf("%-20s\n", "自动连接的网络")
+			for i, network := range info.WiFiAutoJoin.Networks {
+				if network.AutoJoin {
+					fmt.Printf("  %-18s %-20s %s\n", fmt.Sprintf("%d", i+1), "", network.SSID)
 				}
 			}
 		}
 	}
 
+	// 网络客户端动态数据
+	fmt.Println("\n======================= 网络客户端动态数据 =======================")
+	
+	// 显示WiFi信息
+	if info.Network.WiFi.IsConnected {
+		fmt.Printf("%-20s\n", "WiFi信息")
+		fmt.Printf("  %-18s %-20s %s\n", "SSID", "", info.Network.WiFi.SSID)
+		fmt.Printf("  %-18s %-20s %d dBm\n", "信号强度", "", info.Network.WiFi.RSSI)
+		fmt.Printf("  %-18s %-20s %s\n", "PHY模式", "", info.Network.WiFi.PHYMode)
+		fmt.Printf("  %-18s %-20s %d\n", "频道", "", info.Network.WiFi.Channel)
+		fmt.Printf("  %-18s %-20s %.2f GHz\n", "频率", "", info.Network.WiFi.Frequency)
+		fmt.Printf("  %-18s %-20s %d Mbps\n", "传输速率", "", info.Network.WiFi.TxRate)
+		fmt.Printf("\n")
+	}
+	
+	// 显示公网IP
 	if info.Network.PublicIP != "" {
-		fmt.Println("\n======================= 公网IP =======================")
-		fmt.Printf("IP地址: %s\n", info.Network.PublicIP)
+		fmt.Printf("%-20s %-20s %s\n", "公网IP", "", info.Network.PublicIP)
+		fmt.Printf("\n")
 	}
-
-	if len(info.Network.DNSServers) > 0 {
-		fmt.Println("\n======================= DNS服务器 =======================")
-		for i, dns := range info.Network.DNSServers {
-			fmt.Printf("%d: %s\n", i+1, dns)
+	
+	// 显示DNS服务器
+	if len(info.Network.DNS.Servers) > 0 {
+		fmt.Printf("%-20s\n", "DNS服务器")
+		for i, server := range info.Network.DNS.Servers {
+			fmt.Printf("  %-18s %-20s %s\n", fmt.Sprintf("%d", i+1), "", server)
+		}
+		fmt.Printf("\n")
+	}
+	
+	// 显示VPN信息
+	if info.Network.VPN.IsConnected {
+		fmt.Printf("%-20s\n", "VPN信息")
+		fmt.Printf("  %-18s %-20s %s\n", "状态", "", "已连接")
+		if info.Network.VPN.Provider != "" {
+			fmt.Printf("  %-18s %-20s %s\n", "提供商", "", info.Network.VPN.Provider)
+		}
+		if info.Network.VPN.NodeName != "" {
+			fmt.Printf("  %-18s %-20s %s\n", "节点名称", "", info.Network.VPN.NodeName)
+		}
+		fmt.Printf("\n")
+	}
+	
+	// 显示网络延迟信息
+	if len(info.Network.Latency.Targets) > 0 {
+		fmt.Printf("%-20s\n", "网络延迟信息")
+		for _, target := range info.Network.Latency.Targets {
+			fmt.Printf("  %-18s %-20s %s\n", "目标", "", target.TargetName)
+			fmt.Printf("    %-16s %-20s %.2f ms\n", "最小延迟", "", target.MinLatency)
+			fmt.Printf("    %-16s %-20s %.2f ms\n", "平均延迟", "", target.AvgLatency)
+			fmt.Printf("    %-16s %-20s %.2f ms\n", "最大延迟", "", target.MaxLatency)
+			fmt.Printf("    %-16s %-20s %.1f%%\n", "丢包率", "", target.PacketLoss)
+			fmt.Printf("\n")
 		}
 	}
 
-	// 显示已安装应用信息
+	// 显示蓝牙信息
+	if info.Bluetooth.IsAvailable {
+		fmt.Println("蓝牙信息:")
+		fmt.Printf("  状态: %s\n", info.Bluetooth.Status)
+		fmt.Printf("  名称: %s\n", info.Bluetooth.Name)
+		fmt.Printf("  地址: %s\n", info.Bluetooth.Address)
+
+		if len(info.Bluetooth.ConnectedDevices) > 0 {
+			fmt.Println("  已连接设备:")
+			for _, device := range info.Bluetooth.ConnectedDevices {
+				fmt.Printf("    - %s (%s)\n", device.Name, device.Type)
+			}
+		}
+	}
+
+	// 显示WiFi自动连接状态
+	if info.WiFiAutoJoin.IsConfigured {
+		fmt.Println("WiFi自动连接:")
+		fmt.Printf("  状态: %s\n", info.WiFiAutoJoin.Status)
+		if len(info.WiFiAutoJoin.Networks) > 0 {
+			fmt.Println("  已保存网络:")
+			for _, network := range info.WiFiAutoJoin.Networks {
+				fmt.Printf("    - %s (自动连接: %v)\n", network.SSID, network.AutoJoin)
+			}
+		}
+	}
+
+	// 显示已安装应用
 	if len(info.InstalledApps) > 0 {
-		fmt.Println("\n======================= 已安装应用 =======================")
-		for i, app := range info.InstalledApps {
-			if i >= 10 { // 只显示前10个应用
-				fmt.Printf("... 还有 %d 个应用 ...\n", len(info.InstalledApps)-10)
-				break
-			}
-			fmt.Printf("%s", app.Name)
+		fmt.Printf("\n%-20s\n", "已安装应用")
+		displayCount := 10 // 只显示前10个应用
+		if len(info.InstalledApps) < displayCount {
+			displayCount = len(info.InstalledApps)
+		}
+		for i := 0; i < displayCount; i++ {
+			app := info.InstalledApps[i]
 			if app.Version != "" {
-				fmt.Printf(" (版本: %s)", app.Version)
+				fmt.Printf("  %-18s %-20s %s (版本: %s)\n", fmt.Sprintf("%d", i+1), "", app.Name, app.Version)
+			} else {
+				fmt.Printf("  %-18s %-20s %s\n", fmt.Sprintf("%d", i+1), "", app.Name)
 			}
-			fmt.Println()
+		}
+		if len(info.InstalledApps) > displayCount {
+			fmt.Printf("  %-18s %-20s %s\n", "", "", fmt.Sprintf("... 还有 %d 个应用 ...", len(info.InstalledApps)-displayCount))
 		}
 	}
-
-	// 显示正在运行的应用信息
+	
+	// 显示正在运行的应用
 	if len(info.RunningApps) > 0 {
-		fmt.Println("\n======================= 正在运行的应用 =======================")
-		// 按CPU使用率排序（简单实现，实际可以使用sort包）
-		for i := 0; i < len(info.RunningApps) && i < 10; i++ {
-			app := info.RunningApps[i]
-			fmt.Printf("%s (PID: %d)\n", app.Name, app.PID)
-			fmt.Printf("  CPU: %.1f%%\n", app.CPU)
-			fmt.Printf("  内存: %.2f MB\n", float64(app.Memory)/(1024*1024))
+		fmt.Printf("\n%-20s\n", "正在运行的应用")
+		displayCount := 10 // 只显示前10个进程
+		if len(info.RunningApps) < displayCount {
+			displayCount = len(info.RunningApps)
+		}
+		for i := 0; i < displayCount; i++ {
+			proc := info.RunningApps[i]
+			fmt.Printf("  %-18s %-20s %s (PID: %d)\n", fmt.Sprintf("%d", i+1), "", proc.Name, proc.PID)
+			fmt.Printf("    %-16s %-20s %.1f%%\n", "CPU", "", proc.CPU)
+			fmt.Printf("    %-16s %-20s %.2f MB\n", "内存", "", float64(proc.Memory)/(1024*1024))
+		}
+		if len(info.RunningApps) > displayCount {
+			fmt.Printf("  %-18s %-20s %s\n", "", "", fmt.Sprintf("... 还有 %d 个进程 ...", len(info.RunningApps)-displayCount))
 		}
 	}
 

@@ -150,8 +150,8 @@ type NetworkInfo struct {
 	Traffic     TrafficInfo        // 网络流量
 	Latency     LatencyInfo        // 网络延迟
 	VPN         VPNInfo            // VPN信息
-	DNSServers  []string           // DNS配置
-	DNS         []string           // DNS配置（兼容性字段）
+	DNS         DNSConfigInfo      // DNS配置
+	DNSServers  []string           // DNS服务器列表（兼容性字段）
 	PublicIP    string             // 公网IP
 	ProxyStatus bool               // 网络代理状态
 	ProxyInfo   ProxyInfo          // 代理信息
@@ -200,26 +200,119 @@ type TrafficInfo struct {
 
 // ProcessTrafficInfo 表示进程网络流量信息
 type ProcessTrafficInfo struct {
-	PID       int    // 进程ID
-	Name      string // 进程名称
-	BytesSent uint64 // 发送字节数
-	BytesRecv uint64 // 接收字节数
+	PID           int                // 进程ID
+	Name          string             // 进程名称
+	ProcessName   string             // 进程名称（兼容性字段）
+	BytesIn       uint64             // 接收字节数
+	BytesOut      uint64             // 发送字节数
+	Connections   []ConnectionInfo   // 连接信息
+	ConnectionCount int              // 连接数量
+}
+
+// ConnectionInfo 表示网络连接信息
+type ConnectionInfo struct {
+	LocalAddr  string // 本地地址
+	LocalPort  int    // 本地端口
+	RemoteAddr string // 远程地址
+	RemotePort int    // 远程端口
+	Protocol   string // 协议
+	State      string // 连接状态
 }
 
 // LatencyInfo 表示网络延迟信息
 type LatencyInfo struct {
-	AvgLatency float64 // 平均延迟（毫秒）
-	Jitter     float64 // 抖动（毫秒）
-	PacketLoss float64 // 丢包率（百分比）
+	AvgLatency  float64             // 平均延迟（毫秒）
+	Jitter      float64             // 抖动（毫秒）
+	PacketLoss  float64             // 丢包率（百分比）
+	Targets     []TargetLatencyInfo // 目标延迟信息
+	NetworkHops []NetworkHopInfo    // 网络跳点信息
+}
+
+// TargetLatencyInfo 表示目标延迟信息
+type TargetLatencyInfo struct {
+	TargetName  string  // 目标名称
+	TargetHost  string  // 目标主机
+	MinLatency  float64 // 最小延迟（毫秒）
+	AvgLatency  float64 // 平均延迟（毫秒）
+	MaxLatency  float64 // 最大延迟（毫秒）
+	StdDev      float64 // 标准差（毫秒）
+	PacketLoss  float64 // 丢包率（百分比）
+	Jitter      float64 // 抖动（毫秒）
+}
+
+// NetworkHopInfo 表示网络跳点信息
+type NetworkHopInfo struct {
+	HopNum      int     // 跳点序号
+	Host        string  // 主机地址
+	Loss        float64 // 丢包率（百分比）
+	SentPackets int     // 发送的数据包数
+	LastLatency float64 // 最后一次延迟（毫秒）
+	AvgLatency  float64 // 平均延迟（毫秒）
+	BestLatency float64 // 最佳延迟（毫秒）
+	WorstLatency float64 // 最差延迟（毫秒）
+	StdDev      float64 // 标准差（毫秒）
 }
 
 // VPNInfo 表示VPN信息
 type VPNInfo struct {
-	Connected   bool     // 是否连接
-	IsConnected bool     // 是否连接（兼容性字段）
-	NodeName    string   // 节点名称
-	Provider    string   // 提供商
-	Services    []string // VPN服务列表
+	Connected        bool          // 是否已连接
+	IsConnected      bool          // 是否已连接（兼容性字段）
+	NodeName         string        // 节点名称
+	Provider         string        // 提供商
+	Services         []string      // 服务列表
+	Nodes            []string      // 节点列表
+	Server           string        // 服务器
+	Status           string        // 状态
+	ActiveConnection string        // 活动连接
+	ConnectionID     string        // 连接ID
+	Interfaces       []string      // 接口列表
+	NodeInfos        []VPNNodeInfo // 节点详细信息
+	ConfigFile       string        // 配置文件路径
+}
+
+// VPNNodeInfo 表示VPN节点信息
+type VPNNodeInfo struct {
+	Name   string // 节点名称
+	ID     string // 节点ID
+	Status string // 节点状态
+}
+
+// DNSConfigInfo 表示DNS配置信息
+type DNSConfigInfo struct {
+	Servers         []string    // DNS服务器列表
+	SearchDomains   []string    // 搜索域列表
+	ResolutionOrder []string    // 解析顺序
+	HostsFile       string      // hosts文件内容
+	ResolvConfFile  string      // resolv.conf文件内容
+	HostEntries     []HostEntry // hosts条目
+}
+
+// HostEntry 表示hosts文件中的条目
+type HostEntry struct {
+	IP       string // IP地址
+	Hostname string // 主机名
+}
+
+// NetworkTrafficInfo 表示网络流量信息
+type NetworkTrafficInfo struct {
+	Interface     string // 接口名称
+	BytesReceived uint64 // 接收字节数
+	BytesSent     uint64 // 发送字节数
+	PacketsReceived uint64 // 接收数据包数
+	PacketsSent   uint64 // 发送数据包数
+}
+
+// WiFiAutoJoinInfo 表示WiFi自动连接信息
+type WiFiAutoJoinInfo struct {
+	IsConfigured bool              // 是否配置
+	Status       string            // 状态
+	Networks     []WiFiNetworkInfo // 网络列表
+}
+
+// WiFiNetworkInfo 表示WiFi网络信息
+type WiFiNetworkInfo struct {
+	SSID     string // 网络名称
+	AutoJoin bool   // 是否自动连接
 }
 
 // ProxyInfo 表示代理信息
@@ -244,17 +337,4 @@ type ProcessInfo struct {
 	CPU          float64 // CPU使用率
 	Memory       uint64  // 内存使用量（字节）
 	NetworkUsage uint64  // 网络使用量（字节/秒）
-}
-
-// WiFiAutoJoinInfo 表示WiFi自动连接信息
-type WiFiAutoJoinInfo struct {
-	IsConfigured bool              // 是否配置
-	Status       string            // 状态
-	Networks     []WiFiNetworkInfo // 网络列表
-}
-
-// WiFiNetworkInfo 表示WiFi网络信息
-type WiFiNetworkInfo struct {
-	SSID     string // 网络名称
-	AutoJoin bool   // 是否自动连接
 }

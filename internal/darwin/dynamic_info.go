@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 
+	"fmt"
+
 	"github.com/AsterZephyr/SysSpector/pkg/model"
 	"github.com/shirou/gopsutil/v3/disk"
 	"github.com/shirou/gopsutil/v3/mem"
@@ -93,7 +95,7 @@ func getMemoryUsage(info *model.SystemInfo) error {
 	if err != nil {
 		return err
 	}
-	
+
 	info.MemoryUsage = model.MemoryUsageInfo{
 		Total:    memInfo.Total,
 		Used:     memInfo.Used,
@@ -114,7 +116,15 @@ func getBatteryInfo(info *model.SystemInfo) error {
 
 	// 解析电池百分比和充电状态
 	batteryInfo := model.BatteryInfo{}
-	
+
+	// 检查是否存在电池
+	batteryInfo.IsPresent = !strings.Contains(output, "No batteries available")
+
+	if !batteryInfo.IsPresent {
+		info.Battery = batteryInfo
+		return nil
+	}
+
 	// 使用正则表达式匹配电池百分比
 	percentRegex := regexp.MustCompile(`(\d+)%`)
 	percentMatches := percentRegex.FindStringSubmatch(output)
@@ -125,7 +135,7 @@ func getBatteryInfo(info *model.SystemInfo) error {
 
 	// 检查充电状态
 	batteryInfo.IsCharging = strings.Contains(output, "charging") && !strings.Contains(output, "discharging")
-	
+
 	// 检查剩余时间
 	timeRegex := regexp.MustCompile(`(\d+):(\d+)`)
 	timeMatches := timeRegex.FindStringSubmatch(output)
@@ -135,9 +145,10 @@ func getBatteryInfo(info *model.SystemInfo) error {
 		batteryInfo.TimeRemaining = hours*60 + minutes
 	}
 
-	// 获取电池循环计数
+	// 获取电池循环计数和健康状态
 	cycleOutput, err := runCommand("system_profiler", "SPPowerDataType")
 	if err == nil {
+		// 获取循环计数
 		cycleRegex := regexp.MustCompile(`Cycle Count: (\d+)`)
 		cycleMatches := cycleRegex.FindStringSubmatch(cycleOutput)
 		if len(cycleMatches) > 1 {
@@ -151,6 +162,14 @@ func getBatteryInfo(info *model.SystemInfo) error {
 		if len(healthMatches) > 1 {
 			batteryInfo.Health = strings.TrimSpace(healthMatches[1])
 		}
+
+		// 获取最大容量
+		maxCapacityRegex := regexp.MustCompile(`Maximum Capacity: (\d+)%`)
+		maxCapacityMatches := maxCapacityRegex.FindStringSubmatch(cycleOutput)
+		if len(maxCapacityMatches) > 1 {
+			maxCapacity, _ := strconv.Atoi(maxCapacityMatches[1])
+			batteryInfo.Status = fmt.Sprintf("最大容量: %d%%", maxCapacity)
+		}
 	}
 
 	info.Battery = batteryInfo
@@ -159,8 +178,8 @@ func getBatteryInfo(info *model.SystemInfo) error {
 
 // getACAdapterInfo 获取交流充电器信息
 func getACAdapterInfo(info *model.SystemInfo) error {
-	// 使用ioreg命令获取电源信息
-	output, err := runCommand("ioreg", "-l", "-w0")
+	// 使用system_profiler获取电源信息，这与shell脚本一致
+	output, err := runCommand("system_profiler", "SPPowerDataType")
 	if err != nil {
 		return err
 	}
@@ -169,27 +188,30 @@ func getACAdapterInfo(info *model.SystemInfo) error {
 	adapterInfo := model.ACAdapterInfo{}
 	
 	// 检查是否连接了交流充电器
-	adapterInfo.Connected = strings.Contains(output, "\"ExternalConnected\" = Yes")
+	adapterInfo.Connected = strings.Contains(output, "AC Charger Information:")
+	adapterInfo.IsConnected = adapterInfo.Connected // 设置兼容性字段
 	
-	// 尝试获取充电器序列号
-	serialRegex := regexp.MustCompile(`"SerialNumber" = "([^"]+)"`)
-	serialMatches := serialRegex.FindStringSubmatch(output)
-	if len(serialMatches) > 1 {
-		adapterInfo.SerialNum = serialMatches[1]
-	}
-	
-	// 尝试获取充电器名称和功率
-	nameRegex := regexp.MustCompile(`"Name" = "([^"]+)"`)
-	nameMatches := nameRegex.FindStringSubmatch(output)
-	if len(nameMatches) > 1 && strings.Contains(nameMatches[1], "Adapter") {
-		adapterInfo.Name = nameMatches[1]
+	if adapterInfo.Connected {
+		// 尝试获取充电器序列号
+		serialRegex := regexp.MustCompile(`Serial Number: (.+)`)
+		serialMatches := serialRegex.FindStringSubmatch(output)
+		if len(serialMatches) > 1 {
+			adapterInfo.SerialNum = strings.TrimSpace(serialMatches[1])
+		}
 		
-		// 尝试从名称中提取功率
-		wattageRegex := regexp.MustCompile(`(\d+)W`)
-		wattageMatches := wattageRegex.FindStringSubmatch(adapterInfo.Name)
-		if len(wattageMatches) > 1 {
-			wattage, _ := strconv.Atoi(wattageMatches[1])
-			adapterInfo.Wattage = wattage
+		// 尝试获取充电器名称
+		nameRegex := regexp.MustCompile(`Name: (.+)`)
+		nameMatches := nameRegex.FindStringSubmatch(output)
+		if len(nameMatches) > 1 {
+			adapterInfo.Name = strings.TrimSpace(nameMatches[1])
+			
+			// 尝试从名称中提取功率
+			wattageRegex := regexp.MustCompile(`(\d+)W`)
+			wattageMatches := wattageRegex.FindStringSubmatch(adapterInfo.Name)
+			if len(wattageMatches) > 1 {
+				wattage, _ := strconv.Atoi(wattageMatches[1])
+				adapterInfo.Wattage = wattage
+			}
 		}
 	}
 
@@ -199,107 +221,89 @@ func getACAdapterInfo(info *model.SystemInfo) error {
 
 // getBluetoothInfo 获取蓝牙信息
 func getBluetoothInfo(info *model.SystemInfo) error {
-	// 检查blueutil是否已安装
-	_, err := exec.LookPath("blueutil")
-	if err != nil {
-		// blueutil未安装，尝试使用system_profiler
-		output, err := runCommand("system_profiler", "SPBluetoothDataType")
-		if err != nil {
-			return err
-		}
-		
-		// 解析蓝牙状态
-		bluetoothInfo := model.BluetoothInfo{}
-		bluetoothInfo.Enabled = strings.Contains(output, "Bluetooth Power: On")
-		
-		// 解析已连接设备
-		deviceRegex := regexp.MustCompile(`(?s)Connected: Yes.*?Address: ([0-9a-fA-F:]+).*?Name: ([^\n]+)`)
-		deviceMatches := deviceRegex.FindAllStringSubmatch(output, -1)
-		
-		for _, match := range deviceMatches {
-			if len(match) > 2 {
-				device := model.BTDeviceInfo{
-					Address:   match[1],
-					Name:      strings.TrimSpace(match[2]),
-					Connected: true,
-				}
-				
-				// 尝试确定设备类型
-				if strings.Contains(strings.ToLower(device.Name), "keyboard") {
-					device.Type = "键盘"
-				} else if strings.Contains(strings.ToLower(device.Name), "mouse") {
-					device.Type = "鼠标"
-				} else if strings.Contains(strings.ToLower(device.Name), "airpods") {
-					device.Type = "AirPods"
-				} else {
-					device.Type = "其他"
-				}
-				
-				bluetoothInfo.Devices = append(bluetoothInfo.Devices, device)
-			}
-		}
-		
-		info.Bluetooth = bluetoothInfo
-		return nil
-	}
-	
-	// 使用blueutil获取蓝牙状态
-	statusOutput, err := runCommand("blueutil", "--status")
+	// 使用system_profiler获取蓝牙信息
+	output, err := runCommand("system_profiler", "SPBluetoothDataType")
 	if err != nil {
 		return err
 	}
-	
+
+	// 解析蓝牙状态
 	bluetoothInfo := model.BluetoothInfo{}
-	bluetoothInfo.Enabled = strings.TrimSpace(statusOutput) == "1" || strings.TrimSpace(statusOutput) == "on"
-	
-	// 使用blueutil获取已连接设备
+	bluetoothInfo.Enabled = strings.Contains(output, "State: On") || strings.Contains(output, "Bluetooth: On")
+	bluetoothInfo.Status = "关闭"
 	if bluetoothInfo.Enabled {
-		devicesOutput, err := runCommand("blueutil", "--paired")
-		if err == nil {
-			lines := strings.Split(devicesOutput, "\n")
-			for _, line := range lines {
-				if strings.TrimSpace(line) == "" {
-					continue
-				}
-				
-				// 解析设备信息，格式通常为: address (name) [connected]
-				parts := strings.SplitN(line, " ", 2)
-				if len(parts) > 1 {
-					address := parts[0]
-					
-					nameRegex := regexp.MustCompile(`\(([^)]+)\)`)
-					nameMatches := nameRegex.FindStringSubmatch(parts[1])
-					
-					connectedRegex := regexp.MustCompile(`\[connected\]`)
-					connected := connectedRegex.MatchString(parts[1])
-					
-					if len(nameMatches) > 1 {
-						name := nameMatches[1]
-						
-						device := model.BTDeviceInfo{
-							Address:   address,
-							Name:      name,
-							Connected: connected,
-						}
-						
-						// 尝试确定设备类型
-						if strings.Contains(strings.ToLower(name), "keyboard") {
-							device.Type = "键盘"
-						} else if strings.Contains(strings.ToLower(name), "mouse") {
-							device.Type = "鼠标"
-						} else if strings.Contains(strings.ToLower(name), "airpods") {
-							device.Type = "AirPods"
-						} else {
-							device.Type = "其他"
-						}
-						
-						bluetoothInfo.Devices = append(bluetoothInfo.Devices, device)
+		bluetoothInfo.Status = "打开"
+	}
+
+	// 解析已连接设备
+	var connectedDevices []model.BTDeviceInfo
+
+	// 使用正则表达式匹配连接的设备
+	deviceRegex := regexp.MustCompile(`(?s)Connected: Yes.*?Address: ([0-9a-fA-F:]+).*?Name: ([^\n]+)`)
+	deviceMatches := deviceRegex.FindAllStringSubmatch(output, -1)
+
+	for _, match := range deviceMatches {
+		if len(match) > 2 {
+			device := model.BTDeviceInfo{
+				Address:   match[1],
+				Name:      strings.TrimSpace(match[2]),
+				Connected: true,
+			}
+
+			// 尝试确定设备类型
+			deviceName := strings.ToLower(device.Name)
+			if strings.Contains(deviceName, "keyboard") {
+				device.Type = "键盘"
+			} else if strings.Contains(deviceName, "mouse") || strings.Contains(deviceName, "trackpad") {
+				device.Type = "鼠标/触控板"
+			} else if strings.Contains(deviceName, "airpods") || strings.Contains(deviceName, "headphone") || strings.Contains(deviceName, "earphone") {
+				device.Type = "耳机"
+			} else if strings.Contains(deviceName, "speaker") {
+				device.Type = "扬声器"
+			} else {
+				device.Type = "其他"
+			}
+
+			connectedDevices = append(connectedDevices, device)
+		}
+	}
+
+	// 如果没有找到连接的设备，尝试使用另一种方式解析
+	if len(connectedDevices) == 0 {
+		// 尝试提取设备名称
+		deviceNameRegex := regexp.MustCompile(`Connected:\s+Yes[\s\S]*?^\s*([^:]+):\s*$`)
+		deviceNameMatches := deviceNameRegex.FindAllStringSubmatch(output, -1)
+
+		for _, match := range deviceNameMatches {
+			if len(match) > 1 {
+				deviceName := strings.TrimSpace(match[1])
+				if deviceName != "" {
+					device := model.BTDeviceInfo{
+						Name:      deviceName,
+						Connected: true,
 					}
+
+					// 尝试确定设备类型
+					lowerName := strings.ToLower(deviceName)
+					if strings.Contains(lowerName, "keyboard") {
+						device.Type = "键盘"
+					} else if strings.Contains(lowerName, "mouse") || strings.Contains(lowerName, "trackpad") {
+						device.Type = "鼠标/触控板"
+					} else if strings.Contains(lowerName, "airpods") || strings.Contains(lowerName, "headphone") || strings.Contains(lowerName, "earphone") {
+						device.Type = "耳机"
+					} else if strings.Contains(lowerName, "speaker") {
+						device.Type = "扬声器"
+					} else {
+						device.Type = "其他"
+					}
+
+					connectedDevices = append(connectedDevices, device)
 				}
 			}
 		}
 	}
-	
+
+	bluetoothInfo.Devices = connectedDevices
 	info.Bluetooth = bluetoothInfo
 	return nil
 }
@@ -314,7 +318,7 @@ func getTemperatureInfo(info *model.SystemInfo) error {
 	}
 
 	outputStr := string(output)
-	
+
 	// 查找CPU温度
 	cpuTempRegex := regexp.MustCompile(`machdep.xcpm.cpu_thermal_level:\s+(\d+)`)
 	cpuTempMatches := cpuTempRegex.FindStringSubmatch(outputStr)
@@ -323,7 +327,7 @@ func getTemperatureInfo(info *model.SystemInfo) error {
 		cpuTemp, _ = strconv.ParseFloat(cpuTempMatches[1], 64)
 		cpuTemp *= 10 // 转换为摄氏度
 	}
-	
+
 	// 查找GPU温度
 	gpuTempRegex := regexp.MustCompile(`hw.gpufrequency.thermal_level:\s+(\d+)`)
 	gpuTempMatches := gpuTempRegex.FindStringSubmatch(outputStr)
@@ -331,7 +335,7 @@ func getTemperatureInfo(info *model.SystemInfo) error {
 	if len(gpuTempMatches) > 1 {
 		gpuTemp, _ = strconv.ParseFloat(gpuTempMatches[1], 64)
 	}
-	
+
 	// 创建一个温度传感器信息切片
 	sensors := []model.TempSensorInfo{
 		{
@@ -349,7 +353,7 @@ func getTemperatureInfo(info *model.SystemInfo) error {
 			Value:       gpuTemp,
 		},
 	}
-	
+
 	info.Temperature = sensors
 	return nil
 }
@@ -358,7 +362,7 @@ func getTemperatureInfo(info *model.SystemInfo) error {
 func getWiFiAutoJoinInfo(info *model.SystemInfo) error {
 	// 检查WiFi网络配置文件
 	plistPath := "/Library/Preferences/com.apple.network.plist"
-	
+
 	// 检查文件是否存在
 	if _, err := os.Stat(plistPath); os.IsNotExist(err) {
 		// 文件不存在，无法获取自动连接状态
@@ -369,13 +373,13 @@ func getWiFiAutoJoinInfo(info *model.SystemInfo) error {
 		}
 		return nil
 	}
-	
+
 	// 获取当前连接的WiFi网络SSID
 	currentSSID := ""
 	if info.Network.WiFi.IsConnected {
 		currentSSID = info.Network.WiFi.SSID
 	}
-	
+
 	// 如果没有连接WiFi，则返回默认状态
 	if currentSSID == "" {
 		info.WiFiAutoJoin = model.WiFiAutoJoinInfo{
@@ -385,10 +389,10 @@ func getWiFiAutoJoinInfo(info *model.SystemInfo) error {
 		}
 		return nil
 	}
-	
+
 	// 查找当前网络是否配置了自动连接
 	autoJoin := true // 默认为自动连接
-	
+
 	// 创建WiFi自动连接信息
 	info.WiFiAutoJoin = model.WiFiAutoJoinInfo{
 		IsConfigured: true,
@@ -400,6 +404,6 @@ func getWiFiAutoJoinInfo(info *model.SystemInfo) error {
 			},
 		},
 	}
-	
+
 	return nil
 }
