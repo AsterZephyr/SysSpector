@@ -9,6 +9,9 @@ type NetworkInfo struct {
 	IP         string // 客户端IP地址
 	MacAddress string // 客户端MAC地址
 
+	// 国家/地区代码
+	CountryCode string // 用户当前所在地区代码
+
 	// AWDL信息
 	AWDLStatus  string // AWDL状态
 	AWDLEnabled bool   // AWDL是否启用

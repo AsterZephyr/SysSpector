@@ -87,6 +87,12 @@ func GetNetworkInfo(info *model.SystemInfo) error {
 		log.Printf("Error getting network traffic: %v", err)
 	}
 
+	// 获取用户当前所在地区代码
+	err = getCountryCode(&networkInfo)
+	if err != nil {
+		log.Printf("Error getting country code: %v", err)
+	}
+
 	// 将收集到的网络信息设置到系统信息中
 	info.Network = networkInfo
 
@@ -103,15 +109,15 @@ func getWiFiInfo(info *model.NetworkInfo) error {
 			SSID:           "Kwai",
 			BSSID:          "cc:dd:ee:ff:gg:hh",
 			IsConnected:    true,
-			SignalStrength: -56,
-			RSSI:           -56,
-			Noise:          -84,
-			Channel:        52,
-			Frequency:      5.0,
+			SignalStrength: 0,
+			RSSI:           0,
+			Noise:          0,
+			Channel:        0,
+			Frequency:      0.0,
 			PHYMode:        "802.11ac",
 			TxRate:         600,
-			MCS:            9,
-			NSS:            3,
+			MCS:            0,
+			NSS:            0,
 			CountryCode:    "CN",
 			SupportedPHY:   "802.11a/b/g/n/ac/ax",
 		}
@@ -125,6 +131,7 @@ func getWiFiInfo(info *model.NetworkInfo) error {
 	wifiInfo.IsConnected = false
 
 	inCurrentNetwork := false
+	foundCurrentNetworkSection := false
 	for scanner.Scan() {
 		line := scanner.Text()
 		line = strings.TrimSpace(line)
@@ -132,6 +139,7 @@ func getWiFiInfo(info *model.NetworkInfo) error {
 		// 检查是否进入当前网络信息部分
 		if strings.Contains(line, "Current Network Information:") {
 			inCurrentNetwork = true
+			foundCurrentNetworkSection = true
 			wifiInfo.IsConnected = true
 			continue
 		}
@@ -162,12 +170,9 @@ func getWiFiInfo(info *model.NetworkInfo) error {
 
 		// 解析当前网络信息
 		if inCurrentNetwork {
-			if strings.Contains(line, ":") {
+			if strings.HasSuffix(line, ":") {
 				// 这是一个网络名称行
-				parts := strings.SplitN(line, ":", 2)
-				if len(parts) == 2 {
-					wifiInfo.SSID = strings.TrimSpace(parts[0])
-				}
+				wifiInfo.SSID = strings.TrimSuffix(line, ":")
 				continue
 			}
 
@@ -216,19 +221,24 @@ func getWiFiInfo(info *model.NetworkInfo) error {
 		}
 	}
 
+	// 如果没有找到当前网络信息部分，则认为WiFi未连接
+	if !foundCurrentNetworkSection {
+		wifiInfo.IsConnected = false
+	}
+
 	// 如果没有获取到SSID，则认为WiFi未连接
 	if wifiInfo.SSID == "" {
 		wifiInfo.IsConnected = false
 	}
 
-	// 如果没有获取到NSS，设置默认值
+	// 如果没有获取到NSS，不设置默认值
 	if wifiInfo.NSS == 0 {
-		wifiInfo.NSS = 3
+		// 不设置默认值
 	}
 
-	// 如果没有获取到支持的PHY模式，设置默认值
+	// 如果没有获取到支持的PHY模式，不设置默认值
 	if wifiInfo.SupportedPHY == "" {
-		wifiInfo.SupportedPHY = "802.11a/b/g/n/ac/ax"
+		// 不设置默认值
 	}
 
 	info.WiFi = wifiInfo
@@ -243,60 +253,25 @@ func getIPAndMacAddress(info *model.NetworkInfo) error {
 		return err
 	}
 
-	// 解析输出获取IP和MAC地址
-	scanner := bufio.NewScanner(strings.NewReader(output))
-	currentInterface := ""
-	foundIP := false
-	foundMac := false
-
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		// 检查是否是新的网络接口
-		if !strings.HasPrefix(line, "\t") && !strings.HasPrefix(line, " ") && len(line) > 0 {
-			parts := strings.Split(line, ":")
-			if len(parts) > 0 {
-				currentInterface = strings.TrimSpace(parts[0])
-			}
+	// 首先尝试获取en0接口信息（通常是主要的网络接口）
+	// 对于Intel Mac，主要的网络接口可能是en0（WiFi）或en1（以太网）
+	// 对于Apple Silicon Mac，通常是en0
+	interfaces := []string{"en0", "en1", "en2"}
+	
+	for _, iface := range interfaces {
+		// 使用正则表达式提取IP地址
+		ipRegex := regexp.MustCompile(iface + `.*?inet\s+(\d+\.\d+\.\d+\.\d+)`)
+		ipMatches := ipRegex.FindStringSubmatch(output)
+		
+		// 使用正则表达式提取MAC地址
+		macRegex := regexp.MustCompile(iface + `.*?ether\s+([0-9a-f:]+)`)
+		macMatches := macRegex.FindStringSubmatch(output)
+		
+		if len(ipMatches) > 1 && len(macMatches) > 1 {
+			info.IP = ipMatches[1]
+			info.MacAddress = macMatches[1]
+			return nil
 		}
-
-		// 优先查找en0接口（通常是主要的网络接口）
-		// 如果找不到en0，则使用任何有IP和MAC的接口
-		if currentInterface == "en0" || (!foundIP && !foundMac) {
-			// 解析IP地址
-			if strings.Contains(line, "inet ") && !foundIP {
-				ipRegex := regexp.MustCompile(`inet (\d+\.\d+\.\d+\.\d+)`)
-				matches := ipRegex.FindStringSubmatch(line)
-				if len(matches) > 1 {
-					info.IP = matches[1]
-					foundIP = true
-				}
-			}
-
-			// 解析MAC地址
-			if strings.Contains(line, "ether ") && !foundMac {
-				macRegex := regexp.MustCompile(`ether ([0-9a-f:]+)`)
-				matches := macRegex.FindStringSubmatch(line)
-				if len(matches) > 1 {
-					info.MacAddress = matches[1]
-					foundMac = true
-				}
-			}
-		}
-
-		// 如果已经找到了IP和MAC地址，可以提前结束
-		if foundIP && foundMac && currentInterface == "en0" {
-			break
-		}
-	}
-
-	// 如果没有找到IP和MAC地址，设置默认值
-	if !foundIP {
-		info.IP = "172.22.23.5" // 设置默认IP
-	}
-
-	if !foundMac {
-		info.MacAddress = "aa:bb:cc:dd:ee:ff" // 设置默认MAC地址
 	}
 
 	return nil
@@ -457,6 +432,8 @@ func getPublicIP(info *model.NetworkInfo) error {
 
 	resp, err := client.Get("https://api.ipify.org?format=json")
 	if err != nil {
+		// 如果获取失败，设置一个默认值
+		info.PublicIP = "202.13.3.2"
 		return err
 	}
 	defer resp.Body.Close()
@@ -464,6 +441,8 @@ func getPublicIP(info *model.NetworkInfo) error {
 	// 读取响应
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		// 如果读取失败，设置一个默认值
+		info.PublicIP = "202.13.3.2"
 		return err
 	}
 
@@ -474,6 +453,8 @@ func getPublicIP(info *model.NetworkInfo) error {
 
 	err = json.Unmarshal(body, &result)
 	if err != nil {
+		// 如果解析失败，设置一个默认值
+		info.PublicIP = "202.13.3.2"
 		return err
 	}
 
@@ -611,9 +592,9 @@ func getVPNInfo(info *model.NetworkInfo) error {
 		}
 	}
 
-	// 如果没有检测到VPN连接，设置默认值
-	vpnInfo.IsConnected = true
-	vpnInfo.NodeName = "亚太节点"
+	// 如果没有检测到VPN连接，不设置默认值
+	// VPN状态默认为未连接
+	vpnInfo.IsConnected = false
 
 	info.VPN = vpnInfo
 
@@ -853,7 +834,7 @@ func getHostsFile(info *model.NetworkInfo) error {
 	for scanner.Scan() {
 		line := scanner.Text()
 		// 跳过注释和空行
-		if strings.HasPrefix(line, "#") || len(strings.TrimSpace(line)) == 0 {
+		if strings.HasPrefix(line, "#") || strings.TrimSpace(line) == "" {
 			continue
 		}
 
@@ -939,4 +920,31 @@ func parseNetstatOutput(output string) int64 {
 	}
 
 	return totalBytes
+}
+
+// getCountryCode 获取用户当前所在地区代码
+func getCountryCode(info *model.NetworkInfo) error {
+	// 使用IP地址查询API获取国家/地区代码
+	client := &http.Client{
+		Timeout: time.Second * 5,
+	}
+
+	// 使用ip-api.com的免费API
+	resp, err := client.Get("http://ip-api.com/json/")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return err
+	}
+
+	// 提取国家/地区代码
+	if countryCode, ok := result["countryCode"].(string); ok {
+		info.CountryCode = countryCode
+	}
+
+	return nil
 }

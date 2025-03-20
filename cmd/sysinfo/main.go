@@ -25,27 +25,21 @@ func main() {
 	var sysInfo model.SystemInfo
 	var err error
 
-	// 根据操作系统类型选择相应的系统信息收集方法
-	switch runtime.GOOS {
-	case "windows":
-		// Windows 系统
-		log.Println("Detected Windows OS")
-		sysInfo, err = windows.GetSystemInfo()
-		if err != nil {
-			log.Printf("Error collecting Windows system information: %v", err)
-			// 在Windows上，即使有错误也继续执行，显示已收集到的信息
-			fmt.Println("Some system information could not be collected. Displaying available information:")
-		}
-	case "darwin":
-		// macOS 系统
-		log.Println("Detected macOS")
+	if runtime.GOOS == "darwin" {
 		sysInfo, err = darwin.GetSystemInfo()
 		if err != nil {
-			log.Fatalf("Error collecting macOS system information: %v", err)
+			fmt.Printf("Error getting system info: %v\n", err)
+			os.Exit(1)
 		}
-	default:
-		// 不支持的操作系统
-		log.Fatalf("Unsupported operating system: %s", runtime.GOOS)
+	} else if runtime.GOOS == "windows" {
+		sysInfo, err = windows.GetAllSystemInfo()
+		if err != nil {
+			fmt.Printf("Error getting system info: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		fmt.Printf("Unsupported OS: %s\n", runtime.GOOS)
+		os.Exit(1)
 	}
 
 	// 以格式化的方式打印系统信息
@@ -209,6 +203,9 @@ func printSystemInfo(info model.SystemInfo) {
 		if info.ACAdapter.Wattage > 0 {
 			fmt.Printf("%-20s %-20s %dW\n", "交流充电器-功率", "", info.ACAdapter.Wattage)
 		}
+		if info.ACAdapter.ChipModel != "" {
+			fmt.Printf("%-20s %-20s %s\n", "交流充电器-芯片型号", "", info.ACAdapter.ChipModel)
+		}
 	} else {
 		fmt.Printf("%-20s %-20s %s\n", "交流充电器-连接状态", "", "未连接")
 	}
@@ -266,21 +263,65 @@ func printSystemInfo(info model.SystemInfo) {
 	fmt.Printf("%-20s %-20s %s\n", "AWDL状态", "", info.Network.AWDLStatus)
 	fmt.Printf("%-20s %-20s %s\n", "客户端BSSID", "", info.Network.WiFi.BSSID)
 	fmt.Printf("%-20s %-20s %s\n", "WiFi国家/地区代码", "", info.Network.WiFi.CountryCode)
-	fmt.Printf("%-20s %-20s %d dBm\n", "RSSI", "", info.Network.WiFi.RSSI)
-	fmt.Printf("%-20s %-20s %d dBm\n", "噪声", "", info.Network.WiFi.Noise)
+	fmt.Printf("%-20s %-20s %s\n", "国家/地区代码", "", info.Network.CountryCode)
+
+	if info.Network.WiFi.RSSI != 0 {
+		fmt.Printf("%-20s %-20s %d dBm\n", "RSSI", "", info.Network.WiFi.RSSI)
+	} else {
+		fmt.Printf("%-20s %-20s %s\n", "RSSI", "", "")
+	}
+
+	if info.Network.WiFi.Noise != 0 {
+		fmt.Printf("%-20s %-20s %d dBm\n", "噪声", "", info.Network.WiFi.Noise)
+	} else {
+		fmt.Printf("%-20s %-20s %s\n", "噪声", "", "")
+	}
+
 	fmt.Printf("%-20s %-20s %s\n", "PHY模式", "", info.Network.WiFi.PHYMode)
 	fmt.Printf("%-20s %-20s %s\n", "WiFi支持的PHY模式", "", info.Network.WiFi.SupportedPHY)
-	fmt.Printf("%-20s %-20s %d（%.1f Ghz，%d Mhz）\n", "频道", "", info.Network.WiFi.Channel, info.Network.WiFi.Frequency, 40) // 假设带宽为40Mhz
-	fmt.Printf("%-20s %-20s %dMbps\n", "Tx速率", "", info.Network.WiFi.TxRate)
-	fmt.Printf("%-20s %-20s %d\n", "MCS", "", info.Network.WiFi.MCS)
-	fmt.Printf("%-20s %-20s %d\n", "NSS", "", info.Network.WiFi.NSS)
+	if info.Network.WiFi.Channel > 0 && info.Network.WiFi.Frequency > 0 {
+		fmt.Printf("%-20s %-20s %d（%.1f Ghz）\n", "频道", "", info.Network.WiFi.Channel, info.Network.WiFi.Frequency)
+	} else {
+		fmt.Printf("%-20s %-20s %s\n", "频道", "", "")
+	}
+
+	if info.Network.WiFi.TxRate > 0 {
+		fmt.Printf("%-20s %-20s %dMbps\n", "Tx速率", "", info.Network.WiFi.TxRate)
+	} else {
+		fmt.Printf("%-20s %-20s %s\n", "Tx速率", "", "")
+	}
+
+	if info.Network.WiFi.MCS > 0 {
+		fmt.Printf("%-20s %-20s %d\n", "MCS", "", info.Network.WiFi.MCS)
+	} else {
+		fmt.Printf("%-20s %-20s %s\n", "MCS", "", "")
+	}
+
+	if info.Network.WiFi.NSS > 0 {
+		fmt.Printf("%-20s %-20s %d\n", "NSS", "", info.Network.WiFi.NSS)
+	} else {
+		fmt.Printf("%-20s %-20s %s\n", "NSS", "", "")
+	}
 
 	// 显示网卡流量
-	fmt.Printf("%-20s %-20s %s\n", "网卡流量", "", info.Network.NetworkTraffic)
-	fmt.Printf("%-20s %-20s %s\n", "各进程流量", "", info.Network.ProcessTraffic)
+	if info.Network.NetworkTraffic != "" {
+		fmt.Printf("%-20s %-20s %s\n", "网卡流量", "", info.Network.NetworkTraffic)
+	} else {
+		fmt.Printf("%-20s %-20s %s\n", "网卡流量", "", "")
+	}
+
+	if info.Network.ProcessTraffic != "" {
+		fmt.Printf("%-20s %-20s %s\n", "各进程流量", "", info.Network.ProcessTraffic)
+	} else {
+		fmt.Printf("%-20s %-20s %s\n", "各进程流量", "", "")
+	}
 
 	// 显示网络延迟信息
-	fmt.Printf("%-20s %-20s %s\n", "探测点延迟、抖动、丢包", "", fmt.Sprintf("%.0fms", info.Network.Latency.AvgLatency))
+	if info.Network.Latency.AvgLatency > 0 {
+		fmt.Printf("%-20s %-20s %s\n", "探测点延迟、抖动、丢包", "", fmt.Sprintf("%.0fms", info.Network.Latency.AvgLatency))
+	} else {
+		fmt.Printf("%-20s %-20s %s\n", "探测点延迟、抖动、丢包", "", "")
+	}
 
 	// 显示VPN信息
 	if info.Network.VPN.IsConnected {
@@ -323,7 +364,7 @@ func printSystemInfo(info model.SystemInfo) {
 			}
 		}
 	} else {
-		fmt.Printf("%-20s %-20s %s\n", "host文件", "", "127.0.0.1 localhost")
+		fmt.Printf("%-20s %-20s %s\n", "host文件", "", "")
 	}
 
 	// 显示DNS配置
@@ -338,14 +379,14 @@ func printSystemInfo(info model.SystemInfo) {
 			}
 		}
 	} else {
-		fmt.Printf("%-20s %-20s %s\n", "dns配置", "", "119.29.29.29")
+		fmt.Printf("%-20s %-20s %s\n", "dns配置", "", "")
 	}
 
 	// 显示公网IP
 	if info.Network.PublicIP != "" {
 		fmt.Printf("%-20s %-20s %s\n", "公网出口IP", "", info.Network.PublicIP)
 	} else {
-		fmt.Printf("%-20s %-20s %s\n", "公网出口IP", "", "202.13.3.2")
+		fmt.Printf("%-20s %-20s %s\n", "公网出口IP", "", "")
 	}
 
 	// 显示网络代理状态
@@ -477,13 +518,49 @@ func getSystemUptime() (string, error) {
 
 	// 解析uptime输出
 	uptimeStr := string(output)
-
-	// 尝试匹配格式: up 9 days, 15 hours
-	upRegex := regexp.MustCompile(`up\s+(\d+)\s+days?,\s+(\d+)\s+hours?`)
+	
+	// 首先尝试直接从uptime命令输出中提取时间信息
+	// 这适用于macOS的标准输出格式
+	// 例如: "11:52  up 2 days,  1:27, 2 users, load averages: 5.29 4.27 4.07"
+	upRegex := regexp.MustCompile(`up\s+(.*?),.*?(\d+:\d+)`)
 	matches := upRegex.FindStringSubmatch(uptimeStr)
 	if len(matches) > 2 {
-		days, _ := strconv.Atoi(matches[1])
-		hours, _ := strconv.Atoi(matches[2])
+		daysPart := strings.TrimSpace(matches[1]) // 例如: "2 days"
+		hoursPart := strings.TrimSpace(matches[2]) // 例如: "1:27"
+		
+		// 解析天数
+		daysRegex := regexp.MustCompile(`(\d+)\s+days?`)
+		daysMatches := daysRegex.FindStringSubmatch(daysPart)
+		days := 0
+		if len(daysMatches) > 1 {
+			days, _ = strconv.Atoi(daysMatches[1])
+		}
+		
+		// 解析小时和分钟
+		hourMinParts := strings.Split(hoursPart, ":")
+		hours := 0
+		minutes := 0
+		if len(hourMinParts) == 2 {
+			hours, _ = strconv.Atoi(hourMinParts[0])
+			minutes, _ = strconv.Atoi(hourMinParts[1])
+		}
+		
+		// 格式化输出
+		if days > 0 {
+			return fmt.Sprintf("%d天%d小时%d分钟", days, hours, minutes), nil
+		} else if hours > 0 {
+			return fmt.Sprintf("%d小时%d分钟", hours, minutes), nil
+		} else {
+			return fmt.Sprintf("%d分钟", minutes), nil
+		}
+	}
+
+	// 尝试匹配格式: up 9 days, 15 hours
+	upDaysHoursRegex := regexp.MustCompile(`up\s+(\d+)\s+days?,\s+(\d+)\s+hours?`)
+	daysHoursMatches := upDaysHoursRegex.FindStringSubmatch(uptimeStr)
+	if len(daysHoursMatches) > 2 {
+		days, _ := strconv.Atoi(daysHoursMatches[1])
+		hours, _ := strconv.Atoi(daysHoursMatches[2])
 		return fmt.Sprintf("%d天%d小时", days, hours), nil
 	}
 
@@ -503,5 +580,6 @@ func getSystemUptime() (string, error) {
 		return fmt.Sprintf("%d分钟", mins), nil
 	}
 
-	return uptimeStr, nil
+	// 如果无法解析，返回原始字符串
+	return strings.TrimSpace(uptimeStr), nil
 }

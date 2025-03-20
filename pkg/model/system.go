@@ -85,6 +85,7 @@ type ACAdapterInfo struct {
 	SerialNum   string // 序列号
 	Name        string // 名称
 	Wattage     int    // 功率（瓦）
+	ChipModel   string // 芯片型号
 }
 
 // BluetoothInfo 表示蓝牙信息
@@ -131,4 +132,3 @@ type ProcessInfo struct {
 	Memory       uint64  // 内存使用量（字节）
 	NetworkUsage uint64  // 网络使用量（字节/秒）
 }
-

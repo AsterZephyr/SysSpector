@@ -178,40 +178,72 @@ func getBatteryInfo(info *model.SystemInfo) error {
 
 // getACAdapterInfo 获取交流充电器信息
 func getACAdapterInfo(info *model.SystemInfo) error {
+	// 检测是否为Apple Silicon芯片
+	isAppleSilicon := false
+	cmd := exec.Command("sysctl", "machdep.cpu.brand_string")
+	cpuOutput, err := cmd.Output()
+	if err == nil {
+		cpuOutputStr := string(cpuOutput)
+		isAppleSilicon = strings.Contains(cpuOutputStr, "Apple")
+	}
+
 	// 使用system_profiler获取电源信息，这与shell脚本一致
-	output, err := runCommand("system_profiler", "SPPowerDataType")
+	powerOutput, err := runCommand("system_profiler", "SPPowerDataType")
 	if err != nil {
 		return err
 	}
 
 	// 解析交流充电器信息
 	adapterInfo := model.ACAdapterInfo{}
-	
+
 	// 检查是否连接了交流充电器
-	adapterInfo.Connected = strings.Contains(output, "AC Charger Information:")
+	if isAppleSilicon {
+		// Apple Silicon Mac的充电器信息格式
+		adapterInfo.Connected = strings.Contains(powerOutput, "AC Charger Information:")
+	} else {
+		// Intel Mac的充电器信息格式
+		adapterInfo.Connected = strings.Contains(powerOutput, "AC Charger Information:") || 
+			strings.Contains(powerOutput, "AC Adapter Information:") || 
+			strings.Contains(powerOutput, "Power Adapter Information:")
+	}
 	adapterInfo.IsConnected = adapterInfo.Connected // 设置兼容性字段
-	
+
 	if adapterInfo.Connected {
 		// 尝试获取充电器序列号
-		serialRegex := regexp.MustCompile(`Serial Number: (.+)`)
-		serialMatches := serialRegex.FindStringSubmatch(output)
+		serialRegex := regexp.MustCompile(`(?:Serial Number|ID): (.+)`)
+		serialMatches := serialRegex.FindStringSubmatch(powerOutput)
 		if len(serialMatches) > 1 {
 			adapterInfo.SerialNum = strings.TrimSpace(serialMatches[1])
 		}
-		
+
 		// 尝试获取充电器名称
-		nameRegex := regexp.MustCompile(`Name: (.+)`)
-		nameMatches := nameRegex.FindStringSubmatch(output)
+		nameRegex := regexp.MustCompile(`(?:Name|Family): (.+)`)
+		nameMatches := nameRegex.FindStringSubmatch(powerOutput)
 		if len(nameMatches) > 1 {
 			adapterInfo.Name = strings.TrimSpace(nameMatches[1])
-			
+
 			// 尝试从名称中提取功率
 			wattageRegex := regexp.MustCompile(`(\d+)W`)
 			wattageMatches := wattageRegex.FindStringSubmatch(adapterInfo.Name)
 			if len(wattageMatches) > 1 {
 				wattage, _ := strconv.Atoi(wattageMatches[1])
 				adapterInfo.Wattage = wattage
+			} else {
+				// 尝试从其他字段获取功率
+				wattageRegex = regexp.MustCompile(`(?:Wattage|Adapter Wattage): (\d+)W`)
+				wattageMatches = wattageRegex.FindStringSubmatch(powerOutput)
+				if len(wattageMatches) > 1 {
+					wattage, _ := strconv.Atoi(wattageMatches[1])
+					adapterInfo.Wattage = wattage
+				}
 			}
+		}
+
+		// 尝试获取充电器芯片型号
+		chipRegex := regexp.MustCompile(`(?:Manufacturer|Manufacturer ID|Vendor): (.+)`)
+		chipMatches := chipRegex.FindStringSubmatch(powerOutput)
+		if len(chipMatches) > 1 {
+			adapterInfo.ChipModel = strings.TrimSpace(chipMatches[1])
 		}
 	}
 
@@ -310,11 +342,33 @@ func getBluetoothInfo(info *model.SystemInfo) error {
 
 // getTemperatureInfo 获取设备温度信息
 func getTemperatureInfo(info *model.SystemInfo) error {
+	// 检测是否为Apple Silicon芯片
+	isAppleSilicon := false
+	cmd := exec.Command("sysctl", "machdep.cpu.brand_string")
+	output, err := cmd.Output()
+	if err == nil {
+		outputStr := string(output)
+		isAppleSilicon = strings.Contains(outputStr, "Apple")
+	}
+
+	// 根据芯片类型使用不同的温度获取方法
+	if isAppleSilicon {
+		// Apple Silicon芯片的温度获取方法
+		return getAppleSiliconTemperature(info)
+	} else {
+		// Intel芯片的温度获取方法
+		return getIntelTemperature(info)
+	}
+}
+
+// getAppleSiliconTemperature 获取Apple Silicon设备的温度信息
+func getAppleSiliconTemperature(info *model.SystemInfo) error {
 	// 使用sysctl命令获取温度信息
 	cmd := exec.Command("sysctl", "-a")
 	output, err := cmd.Output()
 	if err != nil {
 		log.Printf("获取温度信息失败: %v", err)
+		return err
 	}
 
 	outputStr := string(output)
@@ -352,6 +406,114 @@ func getTemperatureInfo(info *model.SystemInfo) error {
 			Sensor:      "GPU",
 			Value:       gpuTemp,
 		},
+	}
+
+	info.Temperature = sensors
+	return nil
+}
+
+// getIntelTemperature 获取Intel Mac设备的温度信息
+func getIntelTemperature(info *model.SystemInfo) error {
+	// 尝试使用iStats命令获取温度信息
+	// 首先检查是否已安装iStats
+	_, err := exec.LookPath("istats")
+	if err != nil {
+		// iStats未安装，使用备用方法
+		return getIntelTemperatureBackup(info)
+	}
+
+	// 使用iStats获取温度信息
+	cmd := exec.Command("istats")
+	output, err := cmd.Output()
+	if err != nil {
+		log.Printf("使用iStats获取温度信息失败: %v", err)
+		return getIntelTemperatureBackup(info)
+	}
+
+	outputStr := string(output)
+	sensors := []model.TempSensorInfo{}
+
+	// 解析CPU温度
+	cpuTempRegex := regexp.MustCompile(`CPU temp:\s+(\d+\.\d+)°C`)
+	cpuTempMatches := cpuTempRegex.FindStringSubmatch(outputStr)
+	if len(cpuTempMatches) > 1 {
+		cpuTemp, _ := strconv.ParseFloat(cpuTempMatches[1], 64)
+		sensors = append(sensors, model.TempSensorInfo{
+			Name:        "CPU",
+			Temperature: cpuTemp,
+			Location:    "处理器",
+			Sensor:      "CPU",
+			Value:       cpuTemp,
+		})
+	}
+
+	// 解析其他温度传感器
+	sensorRegex := regexp.MustCompile(`(\w+\s*\w*):\s+(\d+\.\d+)°C`)
+	sensorMatches := sensorRegex.FindAllStringSubmatch(outputStr, -1)
+	for _, match := range sensorMatches {
+		if len(match) > 2 && match[1] != "CPU temp" {
+			sensorName := strings.TrimSpace(match[1])
+			sensorTemp, _ := strconv.ParseFloat(match[2], 64)
+			
+			// 跳过已添加的CPU温度
+			if sensorName == "CPU" {
+				continue
+			}
+			
+			sensors = append(sensors, model.TempSensorInfo{
+				Name:        sensorName,
+				Temperature: sensorTemp,
+				Location:    sensorName,
+				Sensor:      sensorName,
+				Value:       sensorTemp,
+			})
+		}
+	}
+
+	info.Temperature = sensors
+	return nil
+}
+
+// getIntelTemperatureBackup 获取Intel Mac设备的温度信息的备用方法
+func getIntelTemperatureBackup(info *model.SystemInfo) error {
+	// 使用osx-cpu-temp命令获取CPU温度
+	_, err := exec.LookPath("osx-cpu-temp")
+	if err != nil {
+		// 如果没有安装任何温度监控工具，返回默认值
+		sensors := []model.TempSensorInfo{
+			{
+				Name:        "CPU",
+				Temperature: 0,
+				Location:    "处理器",
+				Sensor:      "CPU",
+				Value:       0,
+			},
+		}
+		info.Temperature = sensors
+		return nil
+	}
+
+	cmd := exec.Command("osx-cpu-temp")
+	output, err := cmd.Output()
+	if err != nil {
+		log.Printf("使用osx-cpu-temp获取温度信息失败: %v", err)
+		return nil
+	}
+
+	outputStr := string(output)
+	tempRegex := regexp.MustCompile(`(\d+\.\d+)°C`)
+	tempMatches := tempRegex.FindStringSubmatch(outputStr)
+	
+	sensors := []model.TempSensorInfo{}
+	if len(tempMatches) > 1 {
+		cpuTemp, _ := strconv.ParseFloat(tempMatches[1], 64)
+		sensors = append(sensors, model.TempSensorInfo{
+			Name:        "CPU",
+			Temperature: cpuTemp,
+			Location:    "处理器",
+			Sensor:      "CPU",
+			Value:       cpuTemp,
+		})
 	}
 
 	info.Temperature = sensors
