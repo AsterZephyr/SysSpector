@@ -314,6 +314,22 @@ func GetSystemInfo() (model.SystemInfo, error) {
 		log.Printf("Error getting dynamic system info: %v", err)
 	}
 
+	log.Println("正在采集额外硬件信息...")
+	err = GetNetworkCardInfo(&info)
+	if err != nil {
+		log.Printf("Error getting network card info: %v", err)
+	}
+
+	err = GetGraphicsCardInfo(&info)
+	if err != nil {
+		log.Printf("Error getting graphics card info: %v", err)
+	}
+
+	err = GetDisplayInfo(&info)
+	if err != nil {
+		log.Printf("Error getting display info: %v", err)
+	}
+
 	// 收集网络信息
 	err = GetNetworkInfo(&info)
 	if err != nil {

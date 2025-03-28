@@ -20,8 +20,7 @@ import (
 func main() {
 	// 设置日志输出到标准错误
 	log.SetOutput(os.Stderr)
-	log.Println("Starting system information collection...")
-
+	
 	var sysInfo model.SystemInfo
 	var err error
 
@@ -90,6 +89,62 @@ func printSystemInfo(info model.SystemInfo) {
 	fmt.Printf("%-20s %-20s %d\n", "CPU核心数", "", info.CPU.Cores)
 	fmt.Printf("%-20s %-20s %.2f GB\n", "内存", "", float64(info.Memory.Total)/(1024*1024*1024))
 	fmt.Printf("%-20s %-20s %s\n", "内存类型", "", info.Memory.Type)
+
+	// 显示网卡信息
+	if len(info.NetworkCards) > 0 {
+		networkNames := []string{}
+		for _, card := range info.NetworkCards {
+			if card.Name != "" {
+				// 添加更简洁的网卡描述
+				networkInfo := card.Name
+				if strings.Contains(card.Name, "en") && !strings.Contains(card.Name, "(") {
+					// 为网络接口添加描述
+					if card.Name == "en0" {
+						networkInfo = "en0 (Wi-Fi)"
+					} else if strings.HasPrefix(card.Name, "en") && len(card.Name) == 3 {
+						networkInfo = fmt.Sprintf("%s (Thunderbolt %s)", card.Name, card.Name[2:])
+					}
+				}
+				networkNames = append(networkNames, networkInfo)
+			}
+		}
+		// 限制显示的网卡数量，避免输出过长
+		if len(networkNames) > 5 {
+			fmt.Printf("%-20s %-20s %s 等\n", "网卡", "", strings.Join(networkNames[:5], "、"))
+		} else {
+			fmt.Printf("%-20s %-20s %s\n", "网卡", "", strings.Join(networkNames, "、"))
+		}
+	}
+
+	// 显示显卡信息
+	if len(info.GraphicsCards) > 0 {
+		graphicsNames := []string{}
+		for _, card := range info.GraphicsCards {
+			graphicsNames = append(graphicsNames, card.Name)
+		}
+		fmt.Printf("%-20s %-20s %s\n", "显卡", "", strings.Join(graphicsNames, ", "))
+	}
+
+	// 显示显示器信息
+	if len(info.Displays) > 0 {
+		// 使用map去重，避免重复显示相同的显示器
+		displayMap := make(map[string]bool)
+		displayNames := []string{}
+		
+		for _, display := range info.Displays {
+			displayInfo := display.Name
+			if display.Resolution != "" {
+				displayInfo += " (" + display.Resolution + ")"
+			}
+			
+			// 检查是否已经添加过相同的显示器信息
+			if _, exists := displayMap[displayInfo]; !exists {
+				displayMap[displayInfo] = true
+				displayNames = append(displayNames, displayInfo)
+			}
+		}
+		fmt.Printf("%-20s %-20s %s\n", "显示器", "", strings.Join(displayNames, ", "))
+	}
 
 	// 显示硬盘容量
 	var maxDiskSize uint64
@@ -423,10 +478,10 @@ func printSystemInfo(info model.SystemInfo) {
 	}
 
 	// 显示已安装应用（默认隐藏）
-	fmt.Printf("%-20s %-20s %s\n", "已安装应用", "", fmt.Sprintf("共 %d 个应用 (使用 -apps 参数查看详情)", len(info.InstalledApps)))
+	fmt.Printf("%-20s %-20s %s\n", "已安装应用", "", fmt.Sprintf("共 %d 个应用 ", len(info.InstalledApps)))
 
 	// 显示正在运行的应用（默认隐藏）
-	fmt.Printf("%-20s %-20s %s\n", "正在运行的应用", "", fmt.Sprintf("共 %d 个进程 (使用 -procs 参数查看详情)", len(info.RunningApps)))
+	fmt.Printf("%-20s %-20s %s\n", "正在运行的应用", "", fmt.Sprintf("共 %d 个进程 ", len(info.RunningApps)))
 
 	// 如果有命令行参数 --json，则输出 JSON 格式
 	if len(os.Args) > 1 && strings.Contains(os.Args[1], "--json") {
@@ -518,16 +573,13 @@ func getSystemUptime() (string, error) {
 
 	// 解析uptime输出
 	uptimeStr := string(output)
-	
-	// 首先尝试直接从uptime命令输出中提取时间信息
-	// 这适用于macOS的标准输出格式
-	// 例如: "11:52  up 2 days,  1:27, 2 users, load averages: 5.29 4.27 4.07"
+
 	upRegex := regexp.MustCompile(`up\s+(.*?),.*?(\d+:\d+)`)
 	matches := upRegex.FindStringSubmatch(uptimeStr)
 	if len(matches) > 2 {
-		daysPart := strings.TrimSpace(matches[1]) // 例如: "2 days"
+		daysPart := strings.TrimSpace(matches[1])  // 例如: "2 days"
 		hoursPart := strings.TrimSpace(matches[2]) // 例如: "1:27"
-		
+
 		// 解析天数
 		daysRegex := regexp.MustCompile(`(\d+)\s+days?`)
 		daysMatches := daysRegex.FindStringSubmatch(daysPart)
@@ -535,7 +587,7 @@ func getSystemUptime() (string, error) {
 		if len(daysMatches) > 1 {
 			days, _ = strconv.Atoi(daysMatches[1])
 		}
-		
+
 		// 解析小时和分钟
 		hourMinParts := strings.Split(hoursPart, ":")
 		hours := 0
@@ -544,7 +596,7 @@ func getSystemUptime() (string, error) {
 			hours, _ = strconv.Atoi(hourMinParts[0])
 			minutes, _ = strconv.Atoi(hourMinParts[1])
 		}
-		
+
 		// 格式化输出
 		if days > 0 {
 			return fmt.Sprintf("%d天%d小时%d分钟", days, hours, minutes), nil

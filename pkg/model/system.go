@@ -10,6 +10,22 @@ type SystemInfo struct {
 	UUID          string
 	CPU           CPUInfo
 	Memory        MemoryInfo
+	NetworkCards  []struct {
+		Name        string
+		MACAddress  string
+		IPAddresses []string
+	} // 网卡信息
+	GraphicsCards []struct {
+		Name   string
+		Model  string
+		Memory uint64
+	} // 显卡信息
+	Displays      []struct {
+		Name        string
+		Model       string
+		Resolution  string
+		RefreshRate int
+	} // 显示器信息
 	Disks         []Disk
 	DiskUsage     []DiskPartitionInfo
 	MemoryUsage   MemoryUsageInfo
@@ -131,4 +147,26 @@ type ProcessInfo struct {
 	CPU          float64 // CPU使用率
 	Memory       uint64  // 内存使用量（字节）
 	NetworkUsage uint64  // 网络使用量（字节/秒）
+}
+
+// NetworkCardInfo 表示网卡信息
+type NetworkCardInfo struct {
+	Name        string // 网卡名称
+	MACAddress  string // MAC地址
+	IPAddresses []string // IP地址列表
+}
+
+// GraphicsCardInfo 表示显卡信息
+type GraphicsCardInfo struct {
+	Name        string // 显卡名称
+	Model       string // 显卡型号
+	Memory      uint64 // 显存容量（字节）
+}
+
+// DisplayInfo 表示显示器信息
+type DisplayInfo struct {
+	Name        string // 显示器名称
+	Model       string // 显示器型号
+	Resolution  string // 分辨率
+	RefreshRate int    // 刷新率（Hz）
 }
