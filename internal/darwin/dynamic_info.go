@@ -279,24 +279,21 @@ func getBluetoothInfo(info *model.SystemInfo) error {
 
 	// 解析蓝牙状态
 	bluetoothInfo := model.BluetoothInfo{}
-	
+
 	// 修复状态检测逻辑
 	stateRegex := regexp.MustCompile(`State: (\w+)`)
 	stateMatch := stateRegex.FindStringSubmatch(output)
-	
+
 	bluetoothInfo.Enabled = false
 	bluetoothInfo.Status = "关闭"
-	
+
 	if len(stateMatch) > 1 && stateMatch[1] == "On" {
 		bluetoothInfo.Enabled = true
 		bluetoothInfo.Status = "打开"
 	}
-	
-	// 解析已连接设备
+
 	var connectedDevices []model.BTDeviceInfo
 
-	// 修复连接设备检测逻辑
-	// 首先尝试查找"Connected:"部分
 	connectedSection := ""
 	connectedRegex := regexp.MustCompile(`(?s)Connected:(.*?)(?:Not Connected:|$)`)
 	connectedMatch := connectedRegex.FindStringSubmatch(output)
@@ -309,7 +306,7 @@ func getBluetoothInfo(info *model.SystemInfo) error {
 		// 提取设备名称和地址
 		deviceRegex := regexp.MustCompile(`(?m)^\s*([^:]+):\s*$`)
 		deviceMatches := deviceRegex.FindAllStringSubmatchIndex(connectedSection, -1)
-		
+
 		for i, match := range deviceMatches {
 			if len(match) >= 2 {
 				startPos := match[0]
@@ -317,10 +314,10 @@ func getBluetoothInfo(info *model.SystemInfo) error {
 				if i < len(deviceMatches)-1 {
 					endPos = deviceMatches[i+1][0]
 				}
-				
+
 				deviceSection := connectedSection[startPos:endPos]
 				deviceName := strings.TrimSpace(connectedSection[match[2]:match[3]])
-				
+
 				// 提取设备地址
 				addressRegex := regexp.MustCompile(`Address: ([0-9a-fA-F:]+)`)
 				addressMatch := addressRegex.FindStringSubmatch(deviceSection)
@@ -328,7 +325,7 @@ func getBluetoothInfo(info *model.SystemInfo) error {
 				if len(addressMatch) > 1 {
 					address = addressMatch[1]
 				}
-				
+
 				// 提取设备类型
 				typeRegex := regexp.MustCompile(`Minor Type: ([^\n]+)`)
 				typeMatch := typeRegex.FindStringSubmatch(deviceSection)
@@ -347,14 +344,14 @@ func getBluetoothInfo(info *model.SystemInfo) error {
 						deviceType = "扬声器"
 					}
 				}
-				
+
 				device := model.BTDeviceInfo{
 					Name:      deviceName,
 					Address:   address,
 					Type:      deviceType,
 					Connected: true,
 				}
-				
+
 				connectedDevices = append(connectedDevices, device)
 			}
 		}
@@ -597,6 +594,15 @@ func getWiFiAutoJoinInfo(info *model.SystemInfo) error {
 
 // GetNetworkCardInfo 获取网卡信息
 func GetNetworkCardInfo(info *model.SystemInfo) error {
+	// 检测是否为Apple Silicon芯片
+	isAppleSilicon := false
+	cmd := exec.Command("sysctl", "machdep.cpu.brand_string")
+	cpuOutput, err := cmd.Output()
+	if err == nil {
+		cpuOutputStr := string(cpuOutput)
+		isAppleSilicon = strings.Contains(cpuOutputStr, "Apple")
+	}
+
 	// 使用ifconfig命令获取网络接口信息
 	output, err := exec.Command("ifconfig", "-a").Output()
 	if err != nil {
@@ -650,13 +656,38 @@ func GetNetworkCardInfo(info *model.SystemInfo) error {
 			}
 		}
 
+		// 创建网卡信息，根据芯片类型添加不同的描述
+		networkCardName := name
+		if isAppleSilicon {
+			// Apple Silicon芯片的网卡描述
+			if name == "en0" {
+				networkCardName = "en0 (Wi-Fi)"
+			} else if strings.HasPrefix(name, "en") && len(name) == 3 {
+				networkCardName = fmt.Sprintf("%s (Thunderbolt %s)", name, name[2:])
+			}
+		} else {
+			// Intel芯片的网卡描述
+			if name == "en0" {
+				// Intel Mac通常en0是Wi-Fi
+				networkCardName = "en0 (Wi-Fi)"
+			} else if name == "en1" {
+				// Intel Mac通常en1是以太网
+				networkCardName = "en1 (Ethernet)"
+			} else if strings.HasPrefix(name, "en") {
+				// 其他en接口可能是Thunderbolt或USB适配器
+				networkCardName = fmt.Sprintf("%s (Network Interface)", name)
+			} else if strings.HasPrefix(name, "bridge") {
+				networkCardName = fmt.Sprintf("%s (Bridge Interface)", name)
+			}
+		}
+
 		// 创建网卡信息
 		networkCard := struct {
 			Name        string
 			MACAddress  string
 			IPAddresses []string
 		}{
-			Name:        name,
+			Name:        networkCardName,
 			MACAddress:  mac,
 			IPAddresses: ipAddresses,
 		}
@@ -724,9 +755,25 @@ func GetGraphicsCardInfo(info *model.SystemInfo) error {
 		return fmt.Errorf("获取显卡信息失败: %v", err)
 	}
 
-	// 修改正则表达式，适配不同格式的显卡信息
-	// 尝试匹配包含VRAM信息的显卡
-	gpuRegex := regexp.MustCompile(`(?s)Chipset Model: (.+?)(?:\n|$)`)
+	// 检测是否为Apple Silicon芯片
+	isAppleSilicon := false
+	cmd := exec.Command("sysctl", "machdep.cpu.brand_string")
+	cpuOutput, err := cmd.Output()
+	if err == nil {
+		cpuOutputStr := string(cpuOutput)
+		isAppleSilicon = strings.Contains(cpuOutputStr, "Apple")
+	}
+
+	// 根据芯片类型使用不同的正则表达式
+	var gpuRegex *regexp.Regexp
+	if isAppleSilicon {
+		// Apple Silicon的显卡信息格式
+		gpuRegex = regexp.MustCompile(`(?s)Chipset Model: (.+?)(?:\n|$)`)
+	} else {
+		// Intel Mac的显卡信息格式，可能包含"Chipset Model"或"Chip"
+		gpuRegex = regexp.MustCompile(`(?s)(?:Chipset Model|Chip|Graphics/Displays:|Vendor): (.+?)(?:\n|$)`)
+	}
+	
 	gpuMatches := gpuRegex.FindAllStringSubmatch(string(output), -1)
 
 	for _, match := range gpuMatches {
@@ -735,6 +782,11 @@ func GetGraphicsCardInfo(info *model.SystemInfo) error {
 		}
 
 		model := strings.TrimSpace(match[1])
+		
+		// 跳过无效的显卡名称
+		if model == "" || model == ":" {
+			continue
+		}
 		
 		// 创建显卡信息
 		graphicsCard := struct {
@@ -748,7 +800,14 @@ func GetGraphicsCardInfo(info *model.SystemInfo) error {
 		}
 
 		// 尝试查找显存信息
-		memoryRegex := regexp.MustCompile(`(?s)Chipset Model: ` + regexp.QuoteMeta(model) + `.*?(?:VRAM|Total Available).*?: (\d+(?:\.\d+)?) ?(MB|GB)`)
+		var memoryRegex *regexp.Regexp
+		if isAppleSilicon {
+			memoryRegex = regexp.MustCompile(`(?s)Chipset Model: ` + regexp.QuoteMeta(model) + `.*?(?:VRAM|Total Available).*?: (\d+(?:\.\d+)?) ?(MB|GB)`)
+		} else {
+			// Intel Mac的显存信息可能有不同格式
+			memoryRegex = regexp.MustCompile(`(?s)(?:VRAM|Total Available|Video Memory).*?: (\d+(?:\.\d+)?) ?(MB|GB)`)
+		}
+		
 		memoryMatches := memoryRegex.FindStringSubmatch(string(output))
 		
 		if len(memoryMatches) >= 3 {
@@ -780,57 +839,150 @@ func GetDisplayInfo(info *model.SystemInfo) error {
 		return fmt.Errorf("获取显示器信息失败: %v", err)
 	}
 
-	// 解析输出
-	// 查找显示器部分
-	displaySections := regexp.MustCompile(`(?s)Display Type: (.+?)\n(.*?)(?:\n\n|\z)`).FindAllStringSubmatch(string(output), -1)
-	
-	for _, section := range displaySections {
-		if len(section) < 3 {
-			continue
+	// 检测是否为Apple Silicon芯片
+	isAppleSilicon := false
+	cmd := exec.Command("sysctl", "machdep.cpu.brand_string")
+	cpuOutput, err := cmd.Output()
+	if err == nil {
+		cpuOutputStr := string(cpuOutput)
+		isAppleSilicon = strings.Contains(cpuOutputStr, "Apple")
+	}
+
+	// 根据芯片类型使用不同的解析方法
+	if isAppleSilicon {
+		// Apple Silicon的显示器信息格式
+		displaySections := regexp.MustCompile(`(?s)Display Type: (.+?)\n(.*?)(?:\n\n|\z)`).FindAllStringSubmatch(string(output), -1)
+		
+		for _, section := range displaySections {
+			if len(section) < 3 {
+				continue
+			}
+
+			displayType := strings.TrimSpace(section[1])
+			displayDetails := section[2]
+
+			// 提取分辨率
+			resolutionRegex := regexp.MustCompile(`Resolution: (\d+ x \d+)`)
+			resolutionMatch := resolutionRegex.FindStringSubmatch(displayDetails)
+			resolution := ""
+			if len(resolutionMatch) >= 2 {
+				resolution = resolutionMatch[1]
+			}
+
+			// 提取刷新率
+			refreshRateRegex := regexp.MustCompile(`Refresh Rate: (\d+) Hz`)
+			refreshRateMatch := refreshRateRegex.FindStringSubmatch(displayDetails)
+			refreshRate := 0
+			if len(refreshRateMatch) >= 2 {
+				refreshRate, _ = strconv.Atoi(refreshRateMatch[1])
+			}
+
+			// 提取显示器名称/型号
+			modelRegex := regexp.MustCompile(`Model: (.+?)\n`)
+			modelMatch := modelRegex.FindStringSubmatch(displayDetails)
+			model := ""
+			if len(modelMatch) >= 2 {
+				model = strings.TrimSpace(modelMatch[1])
+			}
+
+			// 创建显示器信息
+			display := struct {
+				Name        string
+				Model       string
+				Resolution  string
+				RefreshRate int
+			}{
+				Name:        displayType,
+				Model:       model,
+				Resolution:  resolution,
+				RefreshRate: refreshRate,
+			}
+
+			// 添加到显示器列表
+			info.Displays = append(info.Displays, display)
 		}
-
-		displayType := strings.TrimSpace(section[1])
-		displayDetails := section[2]
-
-		// 提取分辨率
-		resolutionRegex := regexp.MustCompile(`Resolution: (\d+ x \d+)`)
-		resolutionMatch := resolutionRegex.FindStringSubmatch(displayDetails)
-		resolution := ""
-		if len(resolutionMatch) >= 2 {
-			resolution = resolutionMatch[1]
+	} else {
+		// Intel Mac的显示器信息格式
+		// 首先尝试查找显示器部分
+		displaySections := regexp.MustCompile(`(?s)(?:Display|Graphics/Displays).*?:\s*(.*?)(?:\n\n|\z)`).FindAllStringSubmatch(string(output), -1)
+		
+		if len(displaySections) == 0 {
+			// 如果没有找到显示器部分，尝试直接解析整个输出
+			displaySections = [][]string{{"", "", string(output)}}
 		}
+		
+		for _, section := range displaySections {
+			var displayDetails string
+			if len(section) >= 2 {
+				displayDetails = section[1]
+			} else if len(section) >= 1 {
+				displayDetails = section[0]
+			} else {
+				continue
+			}
 
-		// 提取刷新率
-		refreshRateRegex := regexp.MustCompile(`Refresh Rate: (\d+) Hz`)
-		refreshRateMatch := refreshRateRegex.FindStringSubmatch(displayDetails)
-		refreshRate := 0
-		if len(refreshRateMatch) >= 2 {
-			refreshRate, _ = strconv.Atoi(refreshRateMatch[1])
+			// 提取显示器名称
+			nameRegex := regexp.MustCompile(`(?:Display Type|Color LCD|Monitor Name|Display Name): (.+?)(?:\n|$)`)
+			nameMatch := nameRegex.FindStringSubmatch(displayDetails)
+			displayName := "显示器"
+			if len(nameMatch) >= 2 {
+				displayName = strings.TrimSpace(nameMatch[1])
+			}
+
+			// 提取分辨率
+			resolutionRegex := regexp.MustCompile(`Resolution: (\d+ x \d+)`)
+			resolutionMatch := resolutionRegex.FindStringSubmatch(displayDetails)
+			resolution := ""
+			if len(resolutionMatch) >= 2 {
+				resolution = resolutionMatch[1]
+			}
+
+			// 如果没有找到分辨率，尝试其他格式
+			if resolution == "" {
+				resolutionRegex = regexp.MustCompile(`(\d+) x (\d+)`)
+				resolutionMatch = resolutionRegex.FindStringSubmatch(displayDetails)
+				if len(resolutionMatch) >= 3 {
+					resolution = resolutionMatch[1] + " x " + resolutionMatch[2]
+				}
+			}
+
+			// 提取刷新率
+			refreshRateRegex := regexp.MustCompile(`(?:Refresh Rate|Main Display Frequency): (\d+) Hz`)
+			refreshRateMatch := refreshRateRegex.FindStringSubmatch(displayDetails)
+			refreshRate := 0
+			if len(refreshRateMatch) >= 2 {
+				refreshRate, _ = strconv.Atoi(refreshRateMatch[1])
+			}
+
+			// 提取显示器型号
+			modelRegex := regexp.MustCompile(`(?:Model|Monitor Model|Display Model): (.+?)(?:\n|$)`)
+			modelMatch := modelRegex.FindStringSubmatch(displayDetails)
+			model := ""
+			if len(modelMatch) >= 2 {
+				model = strings.TrimSpace(modelMatch[1])
+			}
+
+			// 如果没有找到型号，使用显示器名称作为型号
+			if model == "" {
+				model = displayName
+			}
+
+			// 创建显示器信息
+			display := struct {
+				Name        string
+				Model       string
+				Resolution  string
+				RefreshRate int
+			}{
+				Name:        displayName,
+				Model:       model,
+				Resolution:  resolution,
+				RefreshRate: refreshRate,
+			}
+
+			// 添加到显示器列表
+			info.Displays = append(info.Displays, display)
 		}
-
-		// 提取显示器名称/型号
-		modelRegex := regexp.MustCompile(`Model: (.+?)\n`)
-		modelMatch := modelRegex.FindStringSubmatch(displayDetails)
-		model := ""
-		if len(modelMatch) >= 2 {
-			model = strings.TrimSpace(modelMatch[1])
-		}
-
-		// 创建显示器信息
-		display := struct {
-			Name        string
-			Model       string
-			Resolution  string
-			RefreshRate int
-		}{
-			Name:        displayType,
-			Model:       model,
-			Resolution:  resolution,
-			RefreshRate: refreshRate,
-		}
-
-		// 添加到显示器列表
-		info.Displays = append(info.Displays, display)
 	}
 
 	return nil

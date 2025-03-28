@@ -24,6 +24,18 @@ func main() {
 	var sysInfo model.SystemInfo
 	var err error
 
+	// 解析命令行参数
+	showApps := false
+	showProcs := false
+	for _, arg := range os.Args {
+		if arg == "-apps" || arg == "--apps" {
+			showApps = true
+		}
+		if arg == "-procs" || arg == "--procs" {
+			showProcs = true
+		}
+	}
+
 	if runtime.GOOS == "darwin" {
 		sysInfo, err = darwin.GetSystemInfo()
 		if err != nil {
@@ -42,7 +54,7 @@ func main() {
 	}
 
 	// 以格式化的方式打印系统信息
-	printSystemInfo(sysInfo)
+	printSystemInfo(sysInfo, showApps, showProcs)
 
 	// 如果命令行参数中包含 --save，则将系统信息保存到文件
 	if len(os.Args) > 1 && os.Args[1] == "--save" {
@@ -53,7 +65,7 @@ func main() {
 		}
 
 		// 格式化输出内容
-		output := formatSystemInfo(sysInfo)
+		output := formatSystemInfo(sysInfo, showApps, showProcs)
 
 		// 写入文件
 		err = os.WriteFile(outputFile, []byte(output), 0644)
@@ -72,7 +84,7 @@ func main() {
 }
 
 // printSystemInfo 格式化输出系统信息
-func printSystemInfo(info model.SystemInfo) {
+func printSystemInfo(info model.SystemInfo, showApps, showProcs bool) {
 	// 硬件基础数据
 	fmt.Println("======================= 硬件基础数据 =======================")
 	fmt.Printf("%-20s %-20s %s\n", "主机名", "", info.Hostname)
@@ -118,11 +130,18 @@ func printSystemInfo(info model.SystemInfo) {
 
 	// 显示显卡信息
 	if len(info.GraphicsCards) > 0 {
+		// 使用map去重，避免重复显示相同的显卡
+		graphicsMap := make(map[string]bool)
 		graphicsNames := []string{}
+		
 		for _, card := range info.GraphicsCards {
-			graphicsNames = append(graphicsNames, card.Name)
+			// 检查是否已经添加过相同的显卡信息
+			if _, exists := graphicsMap[card.Name]; !exists {
+				graphicsMap[card.Name] = true
+				graphicsNames = append(graphicsNames, card.Name)
+			}
 		}
-		fmt.Printf("%-20s %-20s %s\n", "显卡", "", strings.Join(graphicsNames, ", "))
+		fmt.Printf("%-20s %-20s %s\n", "显卡", "", strings.Join(graphicsNames, "、"))
 	}
 
 	// 显示显示器信息
@@ -477,11 +496,54 @@ func printSystemInfo(info model.SystemInfo) {
 		fmt.Printf("%-20s %-20s %s\n", "WiFi自动连接", "", info.WiFiAutoJoin.Status)
 	}
 
-	// 显示已安装应用（默认隐藏）
-	fmt.Printf("%-20s %-20s %s\n", "已安装应用", "", fmt.Sprintf("共 %d 个应用 ", len(info.InstalledApps)))
+	// 显示已安装应用
+	fmt.Printf("%-20s %-20s %s", "已安装应用", "", fmt.Sprintf("共 %d 个应用 ", len(info.InstalledApps)))
+	if showApps {
+		fmt.Println()
+		// 显示应用详情
+		if len(info.InstalledApps) > 0 {
+			fmt.Println("\n应用名称                版本                  安装路径")
+			fmt.Println("----------------------------------------------------------------------")
+			for _, app := range info.InstalledApps {
+				name := app.Name
+				if len(name) > 25 {
+					name = name[:22] + "..."
+				}
+				version := app.Version
+				if len(version) > 20 {
+					version = version[:17] + "..."
+				}
+				path := app.Path
+				if len(path) > 40 {
+					path = "..." + path[len(path)-37:]
+				}
+				fmt.Printf("%-25s %-20s %s\n", name, version, path)
+			}
+		}
+	} else {
+		fmt.Println("(使用 -apps 参数查看详细列表)")
+	}
 
-	// 显示正在运行的应用（默认隐藏）
-	fmt.Printf("%-20s %-20s %s\n", "正在运行的应用", "", fmt.Sprintf("共 %d 个进程 ", len(info.RunningApps)))
+	// 显示正在运行的应用
+	fmt.Printf("%-20s %-20s %s", "正在运行的应用", "", fmt.Sprintf("共 %d 个进程 ", len(info.RunningApps)))
+	if showProcs {
+		fmt.Println()
+		// 显示进程详情
+		if len(info.RunningApps) > 0 {
+			fmt.Println("\nPID     进程名称                CPU(%)  内存(MB)")
+			fmt.Println("------------------------------------------------------")
+			for _, proc := range info.RunningApps {
+				name := proc.Name
+				if len(name) > 25 {
+					name = name[:22] + "..."
+				}
+				memoryMB := float64(proc.Memory) / (1024 * 1024)
+				fmt.Printf("%-8d %-25s %-7.1f %.1f\n", proc.PID, name, proc.CPU, memoryMB)
+			}
+		}
+	} else {
+		fmt.Println("(使用 -procs 参数查看详细列表)")
+	}
 
 	// 如果有命令行参数 --json，则输出 JSON 格式
 	if len(os.Args) > 1 && strings.Contains(os.Args[1], "--json") {
@@ -495,7 +557,7 @@ func printSystemInfo(info model.SystemInfo) {
 }
 
 // formatSystemInfo 将系统信息格式化为指定的输出格式
-func formatSystemInfo(info model.SystemInfo) string {
+func formatSystemInfo(info model.SystemInfo, showApps, showProcs bool) string {
 	var sb strings.Builder
 
 	sb.WriteString("静态信息：\n")
@@ -560,6 +622,53 @@ func formatSystemInfo(info model.SystemInfo) string {
 
 	// 8. CPU简短描述（仅型号）
 	sb.WriteString(fmt.Sprintf("8. CPU: %s\n", info.CPU.Model))
+
+	// 显示已安装应用
+	sb.WriteString(fmt.Sprintf("已安装应用：共 %d 个应用\n", len(info.InstalledApps)))
+	if showApps {
+		// 显示应用详情
+		if len(info.InstalledApps) > 0 {
+			sb.WriteString("\n应用名称                版本                  安装路径\n")
+			sb.WriteString("----------------------------------------------------------------------\n")
+			for _, app := range info.InstalledApps {
+				name := app.Name
+				if len(name) > 25 {
+					name = name[:22] + "..."
+				}
+				version := app.Version
+				if len(version) > 20 {
+					version = version[:17] + "..."
+				}
+				path := app.Path
+				if len(path) > 40 {
+					path = "..." + path[len(path)-37:]
+				}
+				sb.WriteString(fmt.Sprintf("%-25s %-20s %s\n", name, version, path))
+			}
+		}
+	} else {
+		sb.WriteString("(使用 -apps 参数查看详细列表)\n")
+	}
+
+	// 显示正在运行的应用
+	sb.WriteString(fmt.Sprintf("正在运行的应用：共 %d 个进程\n", len(info.RunningApps)))
+	if showProcs {
+		// 显示进程详情
+		if len(info.RunningApps) > 0 {
+			sb.WriteString("\nPID     进程名称                CPU(%)  内存(MB)\n")
+			sb.WriteString("------------------------------------------------------\n")
+			for _, proc := range info.RunningApps {
+				name := proc.Name
+				if len(name) > 25 {
+					name = name[:22] + "..."
+				}
+				memoryMB := float64(proc.Memory) / (1024 * 1024)
+				sb.WriteString(fmt.Sprintf("%-8d %-25s %-7.1f %.1f\n", proc.PID, name, proc.CPU, memoryMB))
+			}
+		}
+	} else {
+		sb.WriteString("(使用 -procs 参数查看详细列表)\n")
+	}
 
 	return sb.String()
 }
