@@ -1,3 +1,6 @@
+//go:build darwin
+// +build darwin
+
 package darwin
 
 import (
@@ -37,8 +40,6 @@ func GetSystemInfo() (model.SystemInfo, error) {
 	} else {
 		info.Model = strings.TrimSpace(modelName) // 保存型号标识符
 	}
-
-	// 获取友好的型号名称
 	marketingName, err := runCommand("system_profiler", "SPHardwareDataType")
 	if err != nil {
 		log.Printf("Error getting marketing model name: %v", err)
@@ -47,18 +48,15 @@ func GetSystemInfo() (model.SystemInfo, error) {
 		re := regexp.MustCompile(`Model Name: (.+)`)
 		matches := re.FindStringSubmatch(marketingName)
 		if len(matches) > 1 {
-			// 如果找到了型号名称，更新Model字段，并将原始型号标识符保存到ModelID
-			info.ModelID = info.Model                  // 保存原始型号标识符
-			info.Model = strings.TrimSpace(matches[1]) // 更新为友好的型号名称
+			info.ModelID = info.Model                  
+			info.Model = strings.TrimSpace(matches[1]) 
 		}
 	}
 
-	// 获取序列号
 	serialNumber, err := runCommand("ioreg", "-c", "IOPlatformExpertDevice", "-d", "2")
 	if err != nil {
 		log.Printf("Error getting serial number: %v", err)
 	} else {
-		// 使用正则表达式从输出中提取序列号
 		re := regexp.MustCompile(`"IOPlatformSerialNumber" = "([^"]+)"`)
 		matches := re.FindStringSubmatch(serialNumber)
 		if len(matches) > 1 {
@@ -70,8 +68,6 @@ func GetSystemInfo() (model.SystemInfo, error) {
 	cpuInfo, err := ghw.CPU()
 	if err != nil {
 		log.Printf("Error getting CPU info with ghw: %v", err)
-
-		// 如果 ghw 失败，回退到 gopsutil
 		coreCount, err := runCommand("sysctl", "-n", "hw.physicalcpu")
 		cores := 0
 		if err != nil {

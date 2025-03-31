@@ -6,8 +6,12 @@ type NetworkInfo struct {
 	WiFi WiFiInfo
 
 	// 客户端信息
-	IP         string // 客户端IP地址
-	MacAddress string // 客户端MAC地址
+	IP                string // 客户端IP地址
+	MacAddress        string // 客户端MAC地址
+	Gateway           string // 网关地址
+	SubnetMask        string // 子网掩码
+	IPAcquisitionMode string // IP获取方式（DHCP/静态）
+	InterfaceName     string // 网络接口名称
 
 	// 国家/地区代码
 	CountryCode string // 用户当前所在地区代码
@@ -17,7 +21,9 @@ type NetworkInfo struct {
 	AWDLEnabled bool   // AWDL是否启用
 
 	// 公网IP信息
-	PublicIP string // 公网出口IP
+	PublicIP        string // 公网出口IP
+	PublicIPSource  string // 公网IP获取来源
+	PublicIPDetails string // 公网IP详细信息
 
 	// DNS信息
 	DNS        DNSConfigInfo
@@ -41,6 +47,17 @@ type NetworkInfo struct {
 
 	// 各进程流量
 	ProcessTraffic string // 各进程流量（KB/s）
+	
+	// 网络过滤条件
+	FilterConditions []NetworkFilterCondition // 网络过滤条件列表
+}
+
+// NetworkFilterCondition 表示网络过滤条件
+type NetworkFilterCondition struct {
+	Name    string // 过滤条件名称
+	Enabled bool   // 是否启用
+	Type    string // 过滤类型
+	Details string // 详细信息
 }
 
 // WiFiInfo 表示WiFi信息
@@ -86,6 +103,7 @@ type DNSInfo struct {
 type VPNInfo struct {
 	IsConnected      bool          // 是否已连接VPN
 	Provider         string        // VPN提供商
+	ClientName       string        // VPN客户端名称
 	NodeName         string        // VPN节点名称
 	Services         []string      // 服务列表
 	Nodes            []string      // 节点列表
@@ -155,9 +173,35 @@ type WiFiNetworkInfo struct {
 
 // ProxyInfo 表示代理信息
 type ProxyInfo struct {
-	Enabled bool   // 是否启用
-	Server  string // 服务器地址
-	Port    int    // 端口
+	Enabled           bool   // 是否启用
+	Server            string // 服务器地址（兼容旧版本）
+	Port              int    // 端口（兼容旧版本）
+	
+	// HTTP代理
+	HTTPEnabled       bool   // 是否启用HTTP代理
+	HTTPServer        string // HTTP代理服务器地址
+	HTTPPort          int    // HTTP代理端口
+	
+	// HTTPS代理
+	HTTPSEnabled      bool   // 是否启用HTTPS代理
+	HTTPSServer       string // HTTPS代理服务器地址
+	HTTPSPort         int    // HTTPS代理端口
+	
+	// SOCKS代理
+	SOCKSEnabled      bool   // 是否启用SOCKS代理
+	SOCKSServer       string // SOCKS代理服务器地址
+	SOCKSPort         int    // SOCKS代理端口
+	
+	// 自动代理配置
+	AutoConfigEnabled bool   // 是否启用自动代理配置
+	AutoConfigURL     string // 自动代理配置URL
+	
+	// 环境变量代理
+	EnvProxyEnabled   bool   // 是否启用环境变量代理
+	
+	// 代理应用
+	ProxyAppRunning   bool   // 是否有代理应用运行
+	ProxyAppName      string // 代理应用名称
 }
 
 // RouteEntry 表示路由表条目

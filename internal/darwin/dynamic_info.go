@@ -1,3 +1,6 @@
+//go:build darwin
+// +build darwin
+
 package darwin
 
 import (
@@ -7,12 +10,16 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-
+	"time"
+	"bufio"
+	"io"
 	"fmt"
 
 	"github.com/AsterZephyr/SysSpector/pkg/model"
 	"github.com/shirou/gopsutil/v3/disk"
 	"github.com/shirou/gopsutil/v3/mem"
+	"github.com/shirou/gopsutil/v3/cpu"
+	"github.com/AsterZephyr/SysSpector/internal/darwin/smc"
 )
 
 // GetDynamicSystemInfo 收集macOS系统的动态硬件信息
@@ -29,6 +36,12 @@ func GetDynamicSystemInfo(info *model.SystemInfo) error {
 	err = getMemoryUsage(info)
 	if err != nil {
 		log.Printf("Error getting memory usage: %v", err)
+	}
+
+	// 收集CPU和GPU使用率
+	err = getSystemUsage(info)
+	if err != nil {
+		log.Printf("Error getting system usage: %v", err)
 	}
 
 	// 收集电池信息
@@ -49,7 +62,7 @@ func GetDynamicSystemInfo(info *model.SystemInfo) error {
 		log.Printf("Error getting bluetooth info: %v", err)
 	}
 
-	// 收集设备温度信息
+	// 收集温度信息
 	err = getTemperatureInfo(info)
 	if err != nil {
 		log.Printf("Error getting temperature info: %v", err)
@@ -59,6 +72,12 @@ func GetDynamicSystemInfo(info *model.SystemInfo) error {
 	err = getWiFiAutoJoinInfo(info)
 	if err != nil {
 		log.Printf("Error getting WiFi auto join info: %v", err)
+	}
+	
+	// 收集网络过滤条件
+	err = getNetworkFilterConditions(info)
+	if err != nil {
+		log.Printf("Error getting network filter conditions: %v", err)
 	}
 
 	// 收集网卡信息
@@ -119,6 +138,119 @@ func getMemoryUsage(info *model.SystemInfo) error {
 		Used:     memInfo.Used,
 		Free:     memInfo.Free,
 		UsedPerc: memInfo.UsedPercent,
+	}
+
+	return nil
+}
+
+// getSystemUsage 获取系统使用率（CPU和GPU）
+func getSystemUsage(info *model.SystemInfo) error {
+	// 获取CPU使用率
+	cpuPercent, err := cpu.Percent(time.Second, false)
+	if err != nil {
+		log.Printf("获取CPU使用率失败: %v", err)
+	} else if len(cpuPercent) > 0 {
+		// 将CPU使用率设置到SystemInfo结构体中
+		info.CPUUsage = cpuPercent[0]
+		
+		// 同时添加到温度传感器中，保持向后兼容
+		cpuUsageSensor := model.TempSensorInfo{
+			Name:        "CPU使用率",
+			Temperature: cpuPercent[0],
+			Location:    "处理器",
+			Sensor:      "CPU",
+			Value:       cpuPercent[0],
+		}
+		
+		// 添加到温度传感器列表
+		info.Temperature = append(info.Temperature, cpuUsageSensor)
+	}
+
+	// 获取GPU使用率
+	gpuUsage := 0.0
+	gpuFound := false
+
+	// 尝试使用powermetrics命令获取GPU使用率
+	cmd := exec.Command("powermetrics", "--samplers", "gpu_power", "--interval", "1", "-n", "1")
+	stdout, err := cmd.StdoutPipe()
+	if err == nil {
+		if err := cmd.Start(); err == nil {
+			reader := bufio.NewReader(stdout)
+			
+			// 读取输出并解析GPU使用率
+			for {
+				line, err := reader.ReadString('\n')
+				if err != nil {
+					if err == io.EOF {
+						break
+					}
+					break
+				}
+
+				// 查找GPU使用率
+				if strings.Contains(line, "GPU utilization") || strings.Contains(line, "GPU Utilization") {
+					re := regexp.MustCompile(`(\d+(\.\d+)?)%`)
+					matches := re.FindStringSubmatch(line)
+					if len(matches) > 1 {
+						gpuUsage, _ = strconv.ParseFloat(matches[1], 64)
+						gpuFound = true
+					}
+				}
+			}
+			
+			cmd.Wait()
+		}
+	}
+
+	// 如果powermetrics失败，尝试使用top命令
+	if !gpuFound {
+		cmd := exec.Command("top", "-l", "1", "-stats", "pid,command,cpu")
+		output, err := cmd.Output()
+		if err == nil {
+			outputStr := string(output)
+			lines := strings.Split(outputStr, "\n")
+			
+			// 查找CPU使用率行，作为GPU使用率的近似值
+			for _, line := range lines {
+				if strings.Contains(line, "CPU usage:") {
+					re := regexp.MustCompile(`(\d+(\.\d+)?)% user`)
+					matches := re.FindStringSubmatch(line)
+					if len(matches) > 1 {
+						userCPU, _ := strconv.ParseFloat(matches[1], 64)
+						// 使用用户CPU使用率的一部分作为GPU使用率的近似值
+						gpuUsage = userCPU * 0.5 // 假设GPU使用率约为用户CPU使用率的一半
+						gpuFound = true
+						break
+					}
+				}
+			}
+		}
+	}
+
+	// 如果找到了GPU使用率，设置到SystemInfo结构体中
+	if gpuFound {
+		// 将GPU使用率设置到SystemInfo结构体中
+		info.GPUUsage = gpuUsage
+		
+		// 同时添加到温度传感器中，保持向后兼容
+		gpuUsageSensor := model.TempSensorInfo{
+			Name:        "GPU使用率",
+			Temperature: gpuUsage,
+			Location:    "图形处理器",
+			Sensor:      "GPU",
+			Value:       gpuUsage,
+		}
+		
+		// 添加到温度传感器列表
+		info.Temperature = append(info.Temperature, gpuUsageSensor)
+	} else {
+		// 如果无法获取GPU使用率，设置一个默认值
+		// 使用CPU使用率的一部分作为GPU使用率的近似值
+		if len(cpuPercent) > 0 {
+			info.GPUUsage = cpuPercent[0] * 0.5 // 假设GPU使用率约为CPU使用率的一半
+		} else {
+			info.GPUUsage = -1 // 表示未知
+		}
 	}
 
 	return nil
@@ -374,13 +506,60 @@ func getTemperatureInfo(info *model.SystemInfo) error {
 	}
 
 	// 根据芯片类型使用不同的温度获取方法
+	var tempErr error
 	if isAppleSilicon {
 		// Apple Silicon芯片的温度获取方法
-		return getAppleSiliconTemperature(info)
+		tempErr = getAppleSiliconTemperature(info)
 	} else {
 		// Intel芯片的温度获取方法
-		return getIntelTemperature(info)
+		tempErr = getIntelTemperature(info)
 	}
+
+	// 如果传统方法失败，尝试使用SMC方法
+	if tempErr != nil {
+		log.Printf("使用传统方法获取温度失败: %v，尝试使用SMC方法", tempErr)
+		smsErr := getTemperatureViaSMC(info)
+		if smsErr != nil {
+			log.Printf("使用SMC方法获取温度失败: %v", smsErr)
+			return tempErr // 返回原始错误
+		}
+	}
+	
+	return nil
+}
+
+// getTemperatureViaSMC 使用SMC方法获取温度信息
+func getTemperatureViaSMC(info *model.SystemInfo) error {
+	// 获取温度信息
+	tempInfo, err := smc.GetTemperature()
+	if err != nil {
+		return err
+	}
+	
+	// 创建温度传感器信息
+	sensors := []model.TempSensorInfo{
+		{
+			Name:        "CPU",
+			Temperature: tempInfo.CPUTemp,
+			Location:    "处理器",
+			Sensor:      tempInfo.KeyUsed,
+			Value:       tempInfo.CPUTemp,
+		},
+	}
+	
+	// 如果有GPU温度，也添加进去
+	if tempInfo.GPUTemp > 0 {
+		sensors = append(sensors, model.TempSensorInfo{
+			Name:        "GPU",
+			Temperature: tempInfo.GPUTemp,
+			Location:    "图形处理器",
+			Sensor:      "GPU",
+			Value:       tempInfo.GPUTemp,
+		})
+	}
+	
+	info.Temperature = sensors
+	return nil
 }
 
 // getAppleSiliconTemperature 获取Apple Silicon设备的温度信息
@@ -648,7 +827,7 @@ func GetNetworkCardInfo(info *model.SystemInfo) error {
 		}
 
 		// 提取IPv6地址
-		ipv6Regex := regexp.MustCompile(`inet6\s+([0-9a-f:]+)`)
+		ipv6Regex := regexp.MustCompile(`inet6\s+([0-9a-fA-F:]+)`)
 		ipv6Matches := ipv6Regex.FindAllStringSubmatch(iface, -1)
 		for _, match := range ipv6Matches {
 			if len(match) >= 2 {
@@ -986,4 +1165,153 @@ func GetDisplayInfo(info *model.SystemInfo) error {
 	}
 
 	return nil
+}
+
+// getNetworkFilterConditions 获取网络过滤条件
+func getNetworkFilterConditions(info *model.SystemInfo) error {
+	// 初始化过滤条件列表
+	info.Network.FilterConditions = []model.NetworkFilterCondition{}
+	
+	// 获取Cisco AnyConnect过滤条件
+	getCiscoAnyConnectFilters(info)
+	
+	// 获取系统防火墙过滤条件
+	getFirewallFilters(info)
+	
+	// 获取其他网络过滤软件的过滤条件
+	getOtherNetworkFilters(info)
+	
+	return nil
+}
+
+// getCiscoAnyConnectFilters 获取Cisco AnyConnect过滤条件
+func getCiscoAnyConnectFilters(info *model.SystemInfo) {
+	// 检查Cisco AnyConnect是否安装
+	cmd := exec.Command("ls", "/Applications/Cisco")
+	output, err := cmd.Output()
+	if err != nil {
+		return // Cisco目录不存在，可能没有安装
+	}
+	
+	// 检查输出中是否包含AnyConnect
+	if !strings.Contains(string(output), "AnyConnect") {
+		return // 没有找到AnyConnect
+	}
+	
+	// 获取Cisco AnyConnect配置
+	cmd = exec.Command("defaults", "read", "/Library/Preferences/com.cisco.anyconnect.vpn.plist")
+	output, err = cmd.Output()
+	if err != nil {
+		return // 无法读取配置
+	}
+	
+	// 解析配置信息
+	lines := strings.Split(string(output), "\n")
+	var filterName, filterDetails string
+	filterEnabled := false
+	
+	for _, line := range lines {
+		// 查找过滤器名称
+		if strings.Contains(line, "FilterName") {
+			parts := strings.Split(line, "=")
+			if len(parts) > 1 {
+				filterName = strings.TrimSpace(parts[1])
+				filterName = strings.Trim(filterName, "\"")
+			}
+		}
+		
+		// 查找过滤器状态
+		if strings.Contains(line, "FilterEnabled") {
+			filterEnabled = strings.Contains(line, "1") || strings.Contains(line, "true")
+		}
+		
+		// 查找过滤器详情
+		if strings.Contains(line, "FilterDescription") {
+			parts := strings.Split(line, "=")
+			if len(parts) > 1 {
+				filterDetails = strings.TrimSpace(parts[1])
+				filterDetails = strings.Trim(filterDetails, "\"")
+			}
+		}
+	}
+	
+	// 如果找到过滤器信息，添加到列表中
+	if filterName != "" {
+		filter := model.NetworkFilterCondition{
+			Name:    filterName,
+			Enabled: filterEnabled,
+			Type:    "Cisco AnyConnect VPN",
+			Details: filterDetails,
+		}
+		info.Network.FilterConditions = append(info.Network.FilterConditions, filter)
+	}
+}
+
+// getFirewallFilters 获取系统防火墙过滤条件
+func getFirewallFilters(info *model.SystemInfo) {
+	// 检查系统防火墙状态
+	cmd := exec.Command("defaults", "read", "/Library/Preferences/com.apple.alf", "globalstate")
+	output, err := cmd.Output()
+	if err != nil {
+		return // 无法读取防火墙状态
+	}
+	
+	// 解析防火墙状态（0=关闭，1=开启但允许已签名的软件，2=开启并仅允许必要的连接）
+	firewallState := strings.TrimSpace(string(output))
+	firewallEnabled := firewallState != "0"
+	
+	// 获取防火墙详细信息
+	var firewallDetails string
+	switch firewallState {
+	case "0":
+		firewallDetails = "关闭"
+	case "1":
+		firewallDetails = "开启（允许已签名的软件）"
+	case "2":
+		firewallDetails = "开启（仅允许必要的连接）"
+	default:
+		firewallDetails = "未知状态"
+	}
+	
+	// 添加防火墙过滤条件
+	filter := model.NetworkFilterCondition{
+		Name:    "macOS防火墙",
+		Enabled: firewallEnabled,
+		Type:    "系统防火墙",
+		Details: firewallDetails,
+	}
+	info.Network.FilterConditions = append(info.Network.FilterConditions, filter)
+}
+
+// getOtherNetworkFilters 获取其他网络过滤软件的过滤条件
+func getOtherNetworkFilters(info *model.SystemInfo) {
+	// 检查Little Snitch
+	cmd := exec.Command("ls", "/Library/Little Snitch")
+	_, err := cmd.Output()
+	if err == nil {
+		// Little Snitch可能已安装
+		filter := model.NetworkFilterCondition{
+			Name:    "Little Snitch",
+			Enabled: true, // 假设已安装就是启用的
+			Type:    "第三方网络监控",
+			Details: "网络流量监控与控制",
+		}
+		info.Network.FilterConditions = append(info.Network.FilterConditions, filter)
+	}
+	
+	// 检查Lulu防火墙
+	cmd = exec.Command("ls", "/Applications/LuLu.app")
+	_, err = cmd.Output()
+	if err == nil {
+		// Lulu可能已安装
+		filter := model.NetworkFilterCondition{
+			Name:    "LuLu",
+			Enabled: true, // 假设已安装就是启用的
+			Type:    "第三方防火墙",
+			Details: "开源网络监控防火墙",
+		}
+		info.Network.FilterConditions = append(info.Network.FilterConditions, filter)
+	}
+	
+	// 检查其他常见的网络过滤软件...
 }

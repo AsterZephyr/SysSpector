@@ -1,16 +1,15 @@
 package model
 
-// SystemInfo 表示收集的系统信息的总体结构
 type SystemInfo struct {
-	Hostname      string
-	OS            string
-	Model         string
-	ModelID       string
-	SerialNumber  string
-	UUID          string
-	CPU           CPUInfo
-	Memory        MemoryInfo
-	NetworkCards  []struct {
+	Hostname     string
+	OS           string
+	Model        string
+	ModelID      string
+	SerialNumber string
+	UUID         string
+	CPU          CPUInfo
+	Memory       MemoryInfo
+	NetworkCards []struct {
 		Name        string
 		MACAddress  string
 		IPAddresses []string
@@ -20,7 +19,7 @@ type SystemInfo struct {
 		Model  string
 		Memory uint64
 	} // 显卡信息
-	Displays      []struct {
+	Displays []struct {
 		Name        string
 		Model       string
 		Resolution  string
@@ -40,6 +39,8 @@ type SystemInfo struct {
 	UpTime        string
 	InstalledApps []AppInfo
 	RunningApps   []ProcessInfo
+	CPUUsage      float64 // CPU使用率
+	GPUUsage      float64 // GPU使用率
 }
 
 // CPUInfo 表示处理器信息
@@ -151,16 +152,16 @@ type ProcessInfo struct {
 
 // NetworkCardInfo 表示网卡信息
 type NetworkCardInfo struct {
-	Name        string // 网卡名称
-	MACAddress  string // MAC地址
+	Name        string   // 网卡名称
+	MACAddress  string   // MAC地址
 	IPAddresses []string // IP地址列表
 }
 
 // GraphicsCardInfo 表示显卡信息
 type GraphicsCardInfo struct {
-	Name        string // 显卡名称
-	Model       string // 显卡型号
-	Memory      uint64 // 显存容量（字节）
+	Name   string // 显卡名称
+	Model  string // 显卡型号
+	Memory uint64 // 显存容量（字节）
 }
 
 // DisplayInfo 表示显示器信息

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -12,49 +13,38 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/AsterZephyr/SysSpector/internal/darwin"
-	"github.com/AsterZephyr/SysSpector/internal/windows"
 	"github.com/AsterZephyr/SysSpector/pkg/model"
 )
+
+// 定义获取系统信息的函数类型
+type GetSystemInfoFunc func() (model.SystemInfo, error)
+
+// 定义平台特定的函数变量，这些变量会在平台特定的init函数中被赋值
+var getSystemInfo GetSystemInfoFunc = defaultGetSystemInfo
+
+// 默认的系统信息函数实现，当平台不支持时使用
+func defaultGetSystemInfo() (model.SystemInfo, error) {
+	return model.SystemInfo{}, fmt.Errorf("不支持的操作系统: %s", runtime.GOOS)
+}
 
 func main() {
 	// 设置日志输出到标准错误
 	log.SetOutput(os.Stderr)
-	
-	var sysInfo model.SystemInfo
-	var err error
 
 	// 解析命令行参数
-	showApps := false
-	showProcs := false
-	for _, arg := range os.Args {
-		if arg == "-apps" || arg == "--apps" {
-			showApps = true
-		}
-		if arg == "-procs" || arg == "--procs" {
-			showProcs = true
-		}
-	}
+	showApps := flag.Bool("apps", false, "显示已安装应用详情")
+	showProcs := flag.Bool("procs", false, "显示正在运行的应用详情")
+	flag.Parse()
 
-	if runtime.GOOS == "darwin" {
-		sysInfo, err = darwin.GetSystemInfo()
-		if err != nil {
-			fmt.Printf("Error getting system info: %v\n", err)
-			os.Exit(1)
-		}
-	} else if runtime.GOOS == "windows" {
-		sysInfo, err = windows.GetAllSystemInfo()
-		if err != nil {
-			fmt.Printf("Error getting system info: %v\n", err)
-			os.Exit(1)
-		}
-	} else {
-		fmt.Printf("Unsupported OS: %s\n", runtime.GOOS)
+	// 获取系统信息
+	sysInfo, err := getSystemInfo()
+	if err != nil {
+		fmt.Printf("获取系统信息失败: %v\n", err)
 		os.Exit(1)
 	}
 
 	// 以格式化的方式打印系统信息
-	printSystemInfo(sysInfo, showApps, showProcs)
+	printSystemInfo(sysInfo, *showApps, *showProcs)
 
 	// 如果命令行参数中包含 --save，则将系统信息保存到文件
 	if len(os.Args) > 1 && os.Args[1] == "--save" {
@@ -65,7 +55,7 @@ func main() {
 		}
 
 		// 格式化输出内容
-		output := formatSystemInfo(sysInfo, showApps, showProcs)
+		output := formatSystemInfo(sysInfo, *showApps, *showProcs)
 
 		// 写入文件
 		err = os.WriteFile(outputFile, []byte(output), 0644)
@@ -133,7 +123,7 @@ func printSystemInfo(info model.SystemInfo, showApps, showProcs bool) {
 		// 使用map去重，避免重复显示相同的显卡
 		graphicsMap := make(map[string]bool)
 		graphicsNames := []string{}
-		
+
 		for _, card := range info.GraphicsCards {
 			// 检查是否已经添加过相同的显卡信息
 			if _, exists := graphicsMap[card.Name]; !exists {
@@ -149,13 +139,13 @@ func printSystemInfo(info model.SystemInfo, showApps, showProcs bool) {
 		// 使用map去重，避免重复显示相同的显示器
 		displayMap := make(map[string]bool)
 		displayNames := []string{}
-		
+
 		for _, display := range info.Displays {
 			displayInfo := display.Name
 			if display.Resolution != "" {
 				displayInfo += " (" + display.Resolution + ")"
 			}
-			
+
 			// 检查是否已经添加过相同的显示器信息
 			if _, exists := displayMap[displayInfo]; !exists {
 				displayMap[displayInfo] = true
@@ -218,7 +208,6 @@ func printSystemInfo(info model.SystemInfo, showApps, showProcs bool) {
 	if info.Network.WiFi.SupportedPHY != "" {
 		fmt.Printf("%-20s %-20s %s\n", "WiFi支持的PHY模式", "", info.Network.WiFi.SupportedPHY)
 	}
-
 	// 硬件动态数据
 	fmt.Println("\n======================= 硬件动态数据 =======================")
 
@@ -230,6 +219,15 @@ func printSystemInfo(info model.SystemInfo, showApps, showProcs bool) {
 		}
 		usedGB := float64(totalUsed) / (1024 * 1024 * 1024)
 		fmt.Printf("%-20s %-20s %.2f GB\n", "硬盘容量（已使用）", "", usedGB)
+	}
+
+	// 显示CPU和GPU使用率
+	if info.CPUUsage > 0 {
+		fmt.Printf("%-20s %-20s %.1f%%\n", "CPU使用率", "", info.CPUUsage)
+	}
+
+	if info.GPUUsage >= 0 {
+		fmt.Printf("%-20s %-20s %.1f%%\n", "GPU使用率", "", info.GPUUsage)
 	}
 
 	// 显示内存使用情况
@@ -330,10 +328,21 @@ func printSystemInfo(info model.SystemInfo, showApps, showProcs bool) {
 	// 网络客户端动态数据
 	fmt.Println("\n======================= 网络客户端动态数据 =======================")
 
+	// 显示网络接口信息
+	fmt.Printf("%-20s %-20s %s\n", "网络接口", "", info.Network.InterfaceName)
+
+	// 显示IP地址信息
+	fmt.Printf("%-20s %-20s %s\n", "本机IP地址", "", info.Network.IP)
+	fmt.Printf("%-20s %-20s %s\n", "子网掩码", "", info.Network.SubnetMask)
+	fmt.Printf("%-20s %-20s %s\n", "默认网关", "", info.Network.Gateway)
+	fmt.Printf("%-20s %-20s %s\n", "IP获取方式", "", info.Network.IPAcquisitionMode)
+	fmt.Printf("%-20s %-20s %s\n", "本机MAC地址", "", info.Network.MacAddress)
+
+	// 显示公网IP信息
+	fmt.Printf("%-20s %-20s %s\n", "公网IP地址", "", info.Network.PublicIP)
+
 	// 显示WiFi信息
 	fmt.Printf("%-20s %-20s %s\n", "客户端SSID", "", info.Network.WiFi.SSID)
-	fmt.Printf("%-20s %-20s %s\n", "客户端IP", "", info.Network.IP)
-	fmt.Printf("%-20s %-20s %s\n", "客户端Mac地址", "", info.Network.MacAddress)
 	fmt.Printf("%-20s %-20s %s\n", "AWDL状态", "", info.Network.AWDLStatus)
 	fmt.Printf("%-20s %-20s %s\n", "客户端BSSID", "", info.Network.WiFi.BSSID)
 	fmt.Printf("%-20s %-20s %s\n", "WiFi国家/地区代码", "", info.Network.WiFi.CountryCode)
@@ -392,7 +401,20 @@ func printSystemInfo(info model.SystemInfo, showApps, showProcs bool) {
 
 	// 显示网络延迟信息
 	if info.Network.Latency.AvgLatency > 0 {
-		fmt.Printf("%-20s %-20s %s\n", "探测点延迟、抖动、丢包", "", fmt.Sprintf("%.0fms", info.Network.Latency.AvgLatency))
+		fmt.Printf("%-20s %-20s 延迟: %.1fms, 抖动: %.1fms, 丢包率: %.1f%%\n",
+			"探测点延迟、抖动、丢包", "",
+			info.Network.Latency.AvgLatency,
+			info.Network.Latency.Jitter,
+			info.Network.Latency.PacketLoss)
+
+		// 显示各探测点的详细信息
+		if len(info.Network.Latency.Targets) > 0 {
+			for _, target := range info.Network.Latency.Targets {
+				fmt.Printf("  %-18s %-20s 延迟: %.1fms, 抖动: %.1fms, 丢包率: %.1f%%\n",
+					target.TargetName, target.TargetHost,
+					target.AvgLatency, target.Jitter, target.PacketLoss)
+			}
+		}
 	} else {
 		fmt.Printf("%-20s %-20s %s\n", "探测点延迟、抖动、丢包", "", "")
 	}
@@ -402,6 +424,23 @@ func printSystemInfo(info model.SystemInfo, showApps, showProcs bool) {
 		fmt.Printf("%-20s %-20s %s\n", "VPN状态及连接的节点", "", fmt.Sprintf("连接、%s", strings.TrimSpace(info.Network.VPN.NodeName)))
 	} else {
 		fmt.Printf("%-20s %-20s %s\n", "VPN状态及连接的节点", "", "未连接")
+	}
+
+	// 显示网络过滤条件
+	if len(info.Network.FilterConditions) > 0 {
+		fmt.Printf("%-20s\n", "网络-过滤条件")
+		for _, filter := range info.Network.FilterConditions {
+			status := "禁用"
+			if filter.Enabled {
+				status = "启用"
+			}
+			fmt.Printf("  %-18s %-20s %s (%s)\n", filter.Name, "", status, filter.Type)
+			if filter.Details != "" {
+				fmt.Printf("  %-18s %-20s %s\n", "", "", filter.Details)
+			}
+		}
+	} else {
+		fmt.Printf("%-20s %-20s %s\n", "网络-过滤条件", "", "未检测到网络过滤软件")
 	}
 
 	// 显示客户端路由表

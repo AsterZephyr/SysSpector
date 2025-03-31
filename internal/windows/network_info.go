@@ -71,14 +71,28 @@ func GetNetworkInfo() (model.NetworkInfo, error) {
 				// 获取MAC地址
 				info.MacAddress = adapter.MACAddress
 				
+				// 获取子网掩码
+				if len(adapter.IPSubnet) > 0 {
+					info.SubnetMask = adapter.IPSubnet[0]
+				}
+				
 				// 获取网关
 				if len(adapter.DefaultIPGateway) > 0 {
-					// 设置VPN信息中的服务器字段作为网关
-					info.VPN.Server = adapter.DefaultIPGateway[0]
+					info.Gateway = adapter.DefaultIPGateway[0]
 				}
 				
 				// 获取DNS服务器
 				info.DNSServers = adapter.DNSServerSearchOrder
+				
+				// 获取IP获取方式
+				if adapter.DHCPEnabled {
+					info.IPAcquisitionMode = "DHCP"
+				} else {
+					info.IPAcquisitionMode = "静态IP"
+				}
+				
+				// 设置接口名称
+				info.InterfaceName = adapter.NetConnectionID
 				
 				// 设置WiFi连接状态
 				if strings.Contains(adapter.Name, "Wireless") || strings.Contains(adapter.Name, "WiFi") || strings.Contains(adapter.Name, "Wi-Fi") {
@@ -92,9 +106,17 @@ func GetNetworkInfo() (model.NetworkInfo, error) {
 	
 	// 获取公网IP
 	info.PublicIP = getPublicIP()
+	info.PublicIPSource = "通过外部API获取"
+	info.PublicIPDetails = "使用https://api.ipify.org服务"
+	
+	// 获取网络延迟、抖动和丢包信息
+	getNetworkLatency(&info)
+	
+	// 获取VPN状态
+	getVPNInfo(&info)
 	
 	// 获取网络代理状态
-	info.ProxyStatus = getProxyStatus()
+	getProxyStatus(&info)
 	
 	// 获取路由表
 	info.RouteTable = getRouteTable()
@@ -117,17 +139,227 @@ func GetNetworkInfo() (model.NetworkInfo, error) {
 	// 获取网络流量
 	info.NetworkTraffic = getNetworkTraffic()
 	
-	// 获取VPN状态
-	vpnStatus := getVPNStatus()
-	if vpnStatus == "已连接" {
-		info.VPN.IsConnected = true
-		info.VPN.Status = vpnStatus
-	} else {
-		info.VPN.IsConnected = false
-		info.VPN.Status = vpnStatus
+	return info, nil
+}
+
+// getNetworkLatency 获取网络延迟、抖动和丢包信息
+func getNetworkLatency(info *model.NetworkInfo) {
+	// 定义要探测的目标
+	targets := []struct {
+		name string
+		host string
+	}{
+		{"默认网关", info.Gateway},
+		{"百度DNS", "180.76.76.76"},
+		{"阿里DNS", "223.5.5.5"},
+		{"谷歌DNS", "8.8.8.8"},
+	}
+
+	// 初始化延迟信息
+	info.Latency = model.LatencyInfo{
+		Targets: []model.TargetLatencyInfo{},
+	}
+
+	var totalLatency float64
+	var validTargetCount int
+
+	// 对每个目标进行ping测试
+	for _, target := range targets {
+		// 跳过空的网关
+		if target.name == "默认网关" && target.host == "" {
+			continue
+		}
+
+		// 执行ping命令，发送5个包
+		cmd := exec.Command("ping", "-n", "5", target.host)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			continue
+		}
+
+		// 解析ping输出
+		outputStr := string(output)
+		targetInfo := model.TargetLatencyInfo{
+			TargetName: target.name,
+			TargetHost: target.host,
+		}
+
+		// 提取延迟信息
+		// 示例输出: 最短 = 4ms，最长 = 6ms，平均 = 5ms
+		minRegex := regexp.MustCompile(`最短 = (\d+)ms`)
+		maxRegex := regexp.MustCompile(`最长 = (\d+)ms`)
+		avgRegex := regexp.MustCompile(`平均 = (\d+)ms`)
+		
+		minMatches := minRegex.FindStringSubmatch(outputStr)
+		maxMatches := maxRegex.FindStringSubmatch(outputStr)
+		avgMatches := avgRegex.FindStringSubmatch(outputStr)
+		
+		if len(minMatches) >= 2 && len(maxMatches) >= 2 && len(avgMatches) >= 2 {
+			min, _ := strconv.ParseFloat(minMatches[1], 64)
+			max, _ := strconv.ParseFloat(maxMatches[1], 64)
+			avg, _ := strconv.ParseFloat(avgMatches[1], 64)
+			
+			targetInfo.MinLatency = min
+			targetInfo.MaxLatency = max
+			targetInfo.AvgLatency = avg
+			
+			// 计算抖动（使用最大值和最小值的差值作为抖动的估计值）
+			targetInfo.Jitter = max - min
+			
+			// 累加总延迟
+			totalLatency += targetInfo.AvgLatency
+			validTargetCount++
+		}
+
+		// 提取丢包率
+		// 示例输出: 已发送 = 5，已接收 = 5，丢失 = 0 (0% 丢失)
+		lossRegex := regexp.MustCompile(`丢失 = \d+ \((\d+)% 丢失\)`)
+		lossMatches := lossRegex.FindStringSubmatch(outputStr)
+		if len(lossMatches) >= 2 {
+			targetInfo.PacketLoss, _ = strconv.ParseFloat(lossMatches[1], 64)
+		}
+
+		// 添加到目标列表
+		info.Latency.Targets = append(info.Latency.Targets, targetInfo)
+	}
+
+	// 计算平均延迟、抖动和丢包率
+	if validTargetCount > 0 {
+		info.Latency.AvgLatency = totalLatency / float64(validTargetCount)
+		
+		// 计算平均抖动和丢包率
+		var totalJitter, totalPacketLoss float64
+		for _, target := range info.Latency.Targets {
+			totalJitter += target.Jitter
+			totalPacketLoss += target.PacketLoss
+		}
+		info.Latency.Jitter = totalJitter / float64(len(info.Latency.Targets))
+		info.Latency.PacketLoss = totalPacketLoss / float64(len(info.Latency.Targets))
+	}
+}
+
+// getVPNInfo 获取VPN信息
+func getVPNInfo(info *model.NetworkInfo) {
+	// 初始化VPN信息
+	vpnInfo := model.VPNInfo{
+		IsConnected: false,
+		Services:    []string{},
+		Nodes:       []string{},
+	}
+
+	// 检查VPN适配器
+	var adapters []win32NetworkAdapter
+	err := safeWMIQuery("SELECT Name, NetConnectionID, MACAddress, Speed, AdapterType, PhysicalAdapter, NetEnabled, ProductName, ServiceName FROM Win32_NetworkAdapter WHERE (Name LIKE '%VPN%' OR Name LIKE '%Virtual%' OR Name LIKE '%Tunnel%') AND NetEnabled=True", &adapters)
+	
+	if err == nil && len(adapters) > 0 {
+		for _, adapter := range adapters {
+			if adapter.NetEnabled {
+				vpnInfo.IsConnected = true
+				vpnInfo.Interfaces = append(vpnInfo.Interfaces, adapter.NetConnectionID)
+				vpnInfo.NodeName = adapter.NetConnectionID
+				break
+			}
+		}
+	}
+
+	// 检查常见VPN客户端进程
+	vpnClients := map[string]string{
+		"Cisco AnyConnect": "vpnui.exe",
+		"OpenVPN":          "openvpn.exe",
+		"WireGuard":        "wireguard.exe",
+		"NordVPN":          "nordvpn.exe",
+		"ExpressVPN":       "expressvpn.exe",
+		"Tunnelblick":      "tunnelblick.exe",
+		"Viscosity":        "viscosity.exe",
+		"Pritunl":          "pritunl.exe",
+		"Pulse Secure":     "pulsetray.exe",
+		"FortiClient":      "forticlient.exe",
+		"Kit":              "kit.exe",
+		"ZeroPass":         "zeropass.exe",
+	}
+
+	for clientName, processName := range vpnClients {
+		cmd := exec.Command("tasklist", "/FI", fmt.Sprintf("IMAGENAME eq %s", processName))
+		output, err := cmd.CombinedOutput()
+		if err == nil && strings.Contains(string(output), processName) {
+			vpnInfo.IsConnected = true
+			vpnInfo.ClientName = clientName
+			vpnInfo.NodeName = clientName + " VPN"
+			
+			// 如果是Kit应用，获取更多详细信息
+			if clientName == "Kit" || clientName == "ZeroPass" {
+				vpnInfo.NodeName = "Kit VPN (ZeroPass)"
+			}
+			
+			break
+		}
+	}
+
+	// 设置VPN信息
+	info.VPN = vpnInfo
+}
+
+// getProxyStatus 获取网络代理状态
+func getProxyStatus(info *model.NetworkInfo) {
+	// 初始化代理信息
+	info.ProxyInfo = model.ProxyInfo{
+		Enabled: false,
 	}
 	
-	return info, nil
+	// 检查系统代理设置
+	cmd := exec.Command("reg", "query", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings", "/v", "ProxyEnable")
+	output, err := cmd.CombinedOutput()
+	
+	if err == nil && strings.Contains(string(output), "0x1") {
+		// 代理已启用
+		info.ProxyInfo.Enabled = true
+		info.ProxyStatus = true
+		
+		// 获取代理服务器地址
+		cmd = exec.Command("reg", "query", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings", "/v", "ProxyServer")
+		output, err = cmd.CombinedOutput()
+		
+		if err == nil {
+			// 提取代理服务器地址
+			proxyRegex := regexp.MustCompile(`ProxyServer\s+REG_SZ\s+(.+)`)
+			matches := proxyRegex.FindStringSubmatch(string(output))
+			
+			if len(matches) > 1 {
+				proxyServer := strings.TrimSpace(matches[1])
+				
+				// 检查是否包含端口
+				if strings.Contains(proxyServer, ":") {
+					parts := strings.Split(proxyServer, ":")
+					if len(parts) == 2 {
+						info.ProxyInfo.Server = parts[0]
+						port, _ := strconv.Atoi(parts[1])
+						info.ProxyInfo.Port = port
+					}
+				} else {
+					info.ProxyInfo.Server = proxyServer
+					info.ProxyInfo.Port = 80 // 默认端口
+				}
+			}
+		}
+	}
+	
+	// 检查是否有代理软件正在运行
+	proxyApps := []string{
+		"Proxifier.exe", "Charles.exe", "Fiddler.exe", "mitmproxy.exe", "Burp.exe", "tinyproxy.exe",
+		"Surge.exe", "ClashX.exe", "v2ray.exe", "Shadowsocks.exe", "Lantern.exe", "Outline.exe",
+	}
+	
+	for _, app := range proxyApps {
+		cmd := exec.Command("tasklist", "/FI", fmt.Sprintf("IMAGENAME eq %s", app))
+		output, err := cmd.CombinedOutput()
+		if err == nil && strings.Contains(string(output), app) {
+			info.ProxyInfo.Enabled = true
+			info.ProxyInfo.ProxyAppRunning = true
+			info.ProxyInfo.ProxyAppName = strings.TrimSuffix(app, ".exe")
+			info.ProxyStatus = true
+			break
+		}
+	}
 }
 
 // getPublicIP 获取公网IP
@@ -165,23 +397,6 @@ func getPublicIP() string {
 	}
 	
 	return ""
-}
-
-// getProxyStatus 获取代理状态
-func getProxyStatus() bool {
-	// 通过注册表查询代理设置
-	cmd := exec.Command("reg", "query", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings", "/v", "ProxyEnable")
-	output, err := cmd.Output()
-	if err != nil {
-		return false
-	}
-	
-	// 解析输出
-	if strings.Contains(string(output), "0x1") {
-		return true
-	}
-	
-	return false
 }
 
 // getRouteTable 获取路由表

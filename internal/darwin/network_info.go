@@ -1,3 +1,6 @@
+//go:build darwin
+// +build darwin
+
 package darwin
 
 import (
@@ -51,16 +54,16 @@ func GetNetworkInfo(info *model.SystemInfo) error {
 		log.Printf("Error getting public IP: %v", err)
 	}
 
+	// 获取网络延迟、抖动和丢包信息
+	err = getNetworkLatency(&networkInfo)
+	if err != nil {
+		log.Printf("Error getting network latency: %v", err)
+	}
+
 	// 获取VPN信息
 	err = getVPNInfo(&networkInfo)
 	if err != nil {
 		log.Printf("Error getting VPN info: %v", err)
-	}
-
-	// 获取网络延迟信息
-	err = getNetworkLatency(&networkInfo)
-	if err != nil {
-		log.Printf("Error getting network latency: %v", err)
 	}
 
 	// 获取网络代理状态
@@ -248,7 +251,7 @@ func getWiFiInfo(info *model.NetworkInfo) error {
 // getIPAndMacAddress 获取客户端IP和MAC地址
 func getIPAndMacAddress(info *model.NetworkInfo) error {
 	// 使用ifconfig命令获取网络接口信息
-	output, err := runCommand("ifconfig", "-a")
+	ifconfigOutput, err := runCommand("ifconfig", "-a")
 	if err != nil {
 		return err
 	}
@@ -258,20 +261,118 @@ func getIPAndMacAddress(info *model.NetworkInfo) error {
 	// 对于Apple Silicon Mac，通常是en0
 	interfaces := []string{"en0", "en1", "en2"}
 	
+	var activeInterface string
+	
 	for _, iface := range interfaces {
+		// 提取接口部分 - 使用更简单的方法
+		ifacePattern := iface + ":"
+		ifaceIndex := strings.Index(ifconfigOutput, ifacePattern)
+		if ifaceIndex == -1 {
+			continue
+		}
+		
+		// 找到下一个接口的开始位置或结束位置
+		nextIfaceIndex := len(ifconfigOutput)
+		for _, nextIface := range interfaces {
+			if nextIface == iface {
+				continue
+			}
+			nextPattern := "\n" + nextIface + ":"
+			idx := strings.Index(ifconfigOutput[ifaceIndex:], nextPattern)
+			if idx != -1 && ifaceIndex+idx < nextIfaceIndex {
+				nextIfaceIndex = ifaceIndex + idx
+			}
+		}
+		
+		// 提取当前接口的部分
+		ifaceSection := ifconfigOutput[ifaceIndex:nextIfaceIndex]
+		
+		// 检查接口是否活动
+		if !strings.Contains(ifaceSection, "status: active") {
+			continue
+		}
+		
 		// 使用正则表达式提取IP地址
-		ipRegex := regexp.MustCompile(iface + `.*?inet\s+(\d+\.\d+\.\d+\.\d+)`)
-		ipMatches := ipRegex.FindStringSubmatch(output)
+		ipRegex := regexp.MustCompile(`inet\s+(\d+\.\d+\.\d+\.\d+)`)
+		ipMatches := ipRegex.FindStringSubmatch(ifaceSection)
 		
 		// 使用正则表达式提取MAC地址
-		macRegex := regexp.MustCompile(iface + `.*?ether\s+([0-9a-f:]+)`)
-		macMatches := macRegex.FindStringSubmatch(output)
+		macRegex := regexp.MustCompile(`ether\s+([0-9a-f:]+)`)
+		macMatches := macRegex.FindStringSubmatch(ifaceSection)
+		
+		// 使用正则表达式提取子网掩码
+		maskRegex := regexp.MustCompile(`netmask\s+(0x[0-9a-f]+)`)
+		maskMatches := maskRegex.FindStringSubmatch(ifaceSection)
 		
 		if len(ipMatches) > 1 && len(macMatches) > 1 {
 			info.IP = ipMatches[1]
 			info.MacAddress = macMatches[1]
-			return nil
+			info.InterfaceName = iface
+			activeInterface = iface
+			
+			// 转换子网掩码从十六进制到点分十进制
+			if len(maskMatches) > 1 {
+				hexMask := maskMatches[1]
+				// 去掉0x前缀
+				hexMask = strings.TrimPrefix(hexMask, "0x")
+				// 解析十六进制
+				maskInt, err := strconv.ParseUint(hexMask, 16, 32)
+				if err == nil {
+					// 转换为点分十进制
+					info.SubnetMask = fmt.Sprintf("%d.%d.%d.%d",
+						byte(maskInt>>24),
+						byte(maskInt>>16),
+						byte(maskInt>>8),
+						byte(maskInt))
+				}
+			}
+			
+			break
 		}
+	}
+	
+	// 如果找到了活动接口，获取网关和IP获取方式
+	if activeInterface != "" {
+		// 获取网关
+		routeOutput, err := runCommand("netstat", "-rn")
+		if err == nil {
+			// 查找默认网关
+			lines := strings.Split(routeOutput, "\n")
+			for _, line := range lines {
+				if strings.HasPrefix(line, "default") {
+					fields := strings.Fields(line)
+					if len(fields) > 1 {
+						info.Gateway = fields[1]
+						break
+					}
+				}
+			}
+		}
+		
+		// 获取IP获取方式（DHCP或静态）
+		// 尝试使用ipconfig命令
+		ipConfigOutput, err := runCommand("ipconfig", "getpacket", activeInterface)
+		if err == nil && strings.Contains(ipConfigOutput, "BOOTREPLY") {
+			info.IPAcquisitionMode = "DHCP"
+		} else {
+			// 尝试使用系统偏好设置
+			networkSetupOutput, err := runCommand("networksetup", "-getinfo", "Wi-Fi")
+			if err == nil {
+				if strings.Contains(networkSetupOutput, "DHCP Configuration") {
+					info.IPAcquisitionMode = "DHCP"
+				} else if strings.Contains(networkSetupOutput, "Manual Configuration") {
+					info.IPAcquisitionMode = "静态IP"
+				} else {
+					info.IPAcquisitionMode = "未知"
+				}
+			} else {
+				info.IPAcquisitionMode = "未知"
+			}
+		}
+		
+		// 获取公网IP的详细来源信息
+		info.PublicIPSource = "通过外部API获取"
+		info.PublicIPDetails = "使用https://api.ipify.org服务"
 	}
 
 	return nil
@@ -542,225 +643,311 @@ func getVPNInfo(info *model.NetworkInfo) error {
 		}
 	}
 
-	// 如果使用了Cisco AnyConnect VPN，尝试获取其状态
-	anyconnectOutput, err := runCommand("/opt/cisco/anyconnect/bin/vpn", "state")
-	if err == nil && !strings.Contains(anyconnectOutput, "not found") {
-		if strings.Contains(anyconnectOutput, "state: Connected") {
-			vpnInfo.IsConnected = true
-			vpnInfo.Provider = "Cisco AnyConnect"
-
-			// 提取连接的服务器
-			serverRegex := regexp.MustCompile(`>> server\s*:\s*(.+)`)
-			matches := serverRegex.FindStringSubmatch(anyconnectOutput)
-			if len(matches) > 1 {
-				vpnInfo.Server = matches[1]
-				vpnInfo.Nodes = append(vpnInfo.Nodes, matches[1])
-			}
-		}
-	}
-
-	// 如果使用了OpenVPN，尝试获取其状态
-	openvpnOutput, err := runCommand("ps", "-ef")
+	// 检查常见VPN客户端进程
+	psOutput, err := runCommand("ps", "aux")
 	if err == nil {
-		if strings.Contains(openvpnOutput, "openvpn") {
-			// 提取OpenVPN配置文件路径
-			openvpnRegex := regexp.MustCompile(`openvpn\s+--config\s+([^\s]+)`)
-			matches := openvpnRegex.FindStringSubmatch(openvpnOutput)
-			if len(matches) > 1 {
-				vpnInfo.IsConnected = true
-				vpnInfo.Provider = "OpenVPN"
-				vpnInfo.ConfigFile = matches[1]
+		// 检查常见VPN客户端进程
+		vpnClients := map[string]string{
+			"Cisco AnyConnect": "vpnagentd",
+			"OpenVPN":          "openvpn",
+			"L2TP":             "pppd",
+			"WireGuard":        "wireguard-go",
+			"VPN Kit":          "vpnkit",
+			"Tunnelblick":      "Tunnelblick",
+			"Viscosity":        "Viscosity",
+			"Pritunl":          "pritunl",
+			"Pulse Secure":     "PulseTray",
+			"FortiClient":      "FortiClient",
+			"Kit":              "Kit.app",
+			"ZeroPass":         "zeropassAgent",
+		}
 
-				// 尝试从配置文件中提取服务器信息
-				if _, err := os.Stat(matches[1]); err == nil {
-					configContent, err := os.ReadFile(matches[1])
-					if err == nil {
-						serverRegex := regexp.MustCompile(`remote\s+([^\s]+)`)
-						serverMatches := serverRegex.FindAllSubmatch(configContent, -1)
-						for _, match := range serverMatches {
-							if len(match) > 1 {
-								server := string(match[1])
-								vpnInfo.Nodes = append(vpnInfo.Nodes, server)
-								if vpnInfo.Server == "" {
-									vpnInfo.Server = server
-								}
-							}
+		for clientName, processName := range vpnClients {
+			if strings.Contains(psOutput, processName) {
+				vpnInfo.IsConnected = true
+				vpnInfo.ClientName = clientName
+				vpnInfo.NodeName = clientName + " VPN"
+				
+				// 如果是Kit应用，获取更多详细信息
+				if clientName == "Kit" || clientName == "ZeroPass" {
+					vpnInfo.NodeName = "Kit VPN (ZeroPass)"
+					
+					// 尝试获取Kit的详细信息
+					kitOutput, err := runCommand("ps", "aux", "|", "grep", "Kit.app")
+					if err == nil && kitOutput != "" {
+						// 提取Kit的命令行参数，可能包含连接信息
+						kitRegex := regexp.MustCompile(`Kit.app.*?(\S+)`)
+						kitMatches := kitRegex.FindStringSubmatch(kitOutput)
+						if len(kitMatches) > 1 {
+							vpnInfo.NodeName = "Kit VPN (" + kitMatches[1] + ")"
 						}
 					}
 				}
+				
+				break
 			}
 		}
 	}
 
-	// 如果没有检测到VPN连接，不设置默认值
-	// VPN状态默认为未连接
-	vpnInfo.IsConnected = false
-
+	// 设置VPN信息
 	info.VPN = vpnInfo
 
 	return nil
 }
 
-// getNetworkLatency 获取网络延迟信息
+// getNetworkLatency 获取网络延迟、抖动和丢包信息
 func getNetworkLatency(info *model.NetworkInfo) error {
-	// 初始化延迟信息
-	latencyInfo := model.LatencyInfo{
-		Targets:     []model.TargetLatencyInfo{},
-		NetworkHops: []model.NetworkHopInfo{},
-	}
-
-	// 定义要ping的目标
+	// 定义要探测的目标
 	targets := []struct {
-		Name string
-		Host string
+		name string
+		host string
 	}{
-		{"Google DNS", "8.8.8.8"},
-		{"Cloudflare DNS", "1.1.1.1"},
-		{"Baidu", "www.baidu.com"},
+		{"默认网关", info.Gateway},
+		{"百度DNS", "180.76.76.76"},
+		{"阿里DNS", "223.5.5.5"},
+		{"谷歌DNS", "8.8.8.8"},
 	}
 
+	// 初始化延迟信息
+	info.Latency = model.LatencyInfo{
+		Targets: []model.TargetLatencyInfo{},
+	}
+
+	var totalLatency float64
+	var validTargetCount int
+
+	// 对每个目标进行ping测试
 	for _, target := range targets {
-		// 使用ping命令获取网络延迟信息
-		output, err := runCommand("ping", "-c", "5", "-q", target.Host)
-		if err != nil {
-			log.Printf("Error pinging %s: %v", target.Host, err)
+		// 跳过空的网关
+		if target.name == "默认网关" && target.host == "" {
 			continue
 		}
 
-		// 解析ping结果
-		latencyRegex := regexp.MustCompile(`min/avg/max/stddev = ([\d.]+)/([\d.]+)/([\d.]+)/([\d.]+)`)
-		matches := latencyRegex.FindStringSubmatch(output)
-
-		if len(matches) > 4 {
-			// 解析延迟数据
-			min, _ := strconv.ParseFloat(matches[1], 64)
-			avg, _ := strconv.ParseFloat(matches[2], 64)
-			max, _ := strconv.ParseFloat(matches[3], 64)
-			stddev, _ := strconv.ParseFloat(matches[4], 64)
-
-			// 解析丢包率
-			packetLossRegex := regexp.MustCompile(`(\d+)% packet loss`)
-			plMatches := packetLossRegex.FindStringSubmatch(output)
-			var packetLoss float64
-			if len(plMatches) > 1 {
-				packetLoss, _ = strconv.ParseFloat(plMatches[1], 64)
-			}
-
-			// 创建目标延迟信息
-			targetLatency := model.TargetLatencyInfo{
-				TargetName: target.Name,
-				TargetHost: target.Host,
-				MinLatency: min,
-				AvgLatency: avg,
-				MaxLatency: max,
-				StdDev:     stddev,
-				PacketLoss: packetLoss,
-				Jitter:     stddev, // 使用标准差作为抖动的估计值
-			}
-
-			// 添加到延迟信息中
-			latencyInfo.Targets = append(latencyInfo.Targets, targetLatency)
+		// 执行ping命令，发送5个包
+		pingOutput, err := runCommand("ping", "-c", "5", "-q", target.host)
+		if err != nil {
+			continue
 		}
+
+		// 解析ping输出
+		targetInfo := model.TargetLatencyInfo{
+			TargetName: target.name,
+			TargetHost: target.host,
+		}
+
+		// 提取延迟信息
+		// 示例输出: round-trip min/avg/max/stddev = 20.222/24.351/33.572/5.332 ms
+		latencyRegex := regexp.MustCompile(`round-trip min/avg/max/stddev = ([0-9.]+)/([0-9.]+)/([0-9.]+)/([0-9.]+)`)
+		latencyMatches := latencyRegex.FindStringSubmatch(pingOutput)
+		if len(latencyMatches) >= 5 {
+			targetInfo.MinLatency, _ = strconv.ParseFloat(latencyMatches[1], 64)
+			targetInfo.AvgLatency, _ = strconv.ParseFloat(latencyMatches[2], 64)
+			targetInfo.MaxLatency, _ = strconv.ParseFloat(latencyMatches[3], 64)
+			targetInfo.StdDev, _ = strconv.ParseFloat(latencyMatches[4], 64)
+			
+			// 计算抖动（使用标准差作为抖动的估计值）
+			targetInfo.Jitter = targetInfo.StdDev
+			
+			// 累加总延迟
+			totalLatency += targetInfo.AvgLatency
+			validTargetCount++
+		}
+
+		// 提取丢包率
+		// 示例输出: 5 packets transmitted, 5 received, 0% packet loss
+		lossRegex := regexp.MustCompile(`(\d+) packets transmitted, (\d+) received, ([0-9.]+)% packet loss`)
+		lossMatches := lossRegex.FindStringSubmatch(pingOutput)
+		if len(lossMatches) >= 4 {
+			targetInfo.PacketLoss, _ = strconv.ParseFloat(lossMatches[3], 64)
+		}
+
+		// 添加到目标列表
+		info.Latency.Targets = append(info.Latency.Targets, targetInfo)
 	}
 
-	// 使用mtr命令获取更详细的网络路径信息（如果可用）
-	mtrOutput, err := runCommand("mtr", "-r", "-c", "5", "8.8.8.8")
-	if err == nil {
-		// 解析mtr输出
-		scanner := bufio.NewScanner(strings.NewReader(mtrOutput))
-		// 跳过标题行
-		for i := 0; i < 2 && scanner.Scan(); i++ {
+	// 计算平均延迟、抖动和丢包率
+	if validTargetCount > 0 {
+		info.Latency.AvgLatency = totalLatency / float64(validTargetCount)
+		
+		// 计算平均抖动和丢包率
+		var totalJitter, totalPacketLoss float64
+		for _, target := range info.Latency.Targets {
+			totalJitter += target.Jitter
+			totalPacketLoss += target.PacketLoss
 		}
-
-		var hops []model.NetworkHopInfo
-		for scanner.Scan() {
-			line := scanner.Text()
-			fields := strings.Fields(line)
-
-			// 确保有足够的字段
-			if len(fields) < 10 {
-				continue
-			}
-
-			// 解析跳数和主机名
-			hopNum, _ := strconv.Atoi(fields[0])
-			hostname := fields[1]
-
-			// 解析丢包率和延迟
-			lossStr := fields[2]
-			loss, _ := strconv.ParseFloat(strings.TrimSuffix(lossStr, "%"), 64)
-
-			snt, _ := strconv.Atoi(fields[3])
-			last, _ := strconv.ParseFloat(fields[4], 64)
-			avg, _ := strconv.ParseFloat(fields[5], 64)
-			best, _ := strconv.ParseFloat(fields[6], 64)
-			worst, _ := strconv.ParseFloat(fields[7], 64)
-			stddev, _ := strconv.ParseFloat(fields[8], 64)
-
-			// 创建跳点信息
-			hop := model.NetworkHopInfo{
-				HopNum:       hopNum,
-				Host:         hostname,
-				Loss:         loss,
-				SentPackets:  snt,
-				LastLatency:  last,
-				AvgLatency:   avg,
-				BestLatency:  best,
-				WorstLatency: worst,
-				StdDev:       stddev,
-			}
-
-			hops = append(hops, hop)
-		}
-
-		latencyInfo.NetworkHops = hops
+		info.Latency.Jitter = totalJitter / float64(len(info.Latency.Targets))
+		info.Latency.PacketLoss = totalPacketLoss / float64(len(info.Latency.Targets))
 	}
-
-	// 设置默认值
-	info.Latency.AvgLatency = 10
-
-	// 设置网络延迟信息
-	info.Latency = latencyInfo
 
 	return nil
 }
 
 // getProxyStatus 获取网络代理状态
 func getProxyStatus(info *model.NetworkInfo) error {
-	// 使用networksetup命令获取网络代理状态
-	output, err := runCommand("networksetup", "-getwebproxy", "Wi-Fi")
-	if err != nil {
-		return err
+	// 初始化代理信息
+	info.ProxyInfo = model.ProxyInfo{
+		Enabled: false,
 	}
-
-	// 解析代理状态
-	enabledRegex := regexp.MustCompile(`Enabled: (.+)`)
-	matches := enabledRegex.FindStringSubmatch(output)
-
-	if len(matches) > 1 {
-		if matches[1] == "Yes" {
-			// 如果代理已启用，获取代理服务器和端口
+	
+	// 获取活动的网络接口
+	activeInterface := "Wi-Fi"
+	if info.InterfaceName != "" {
+		// 如果已经获取到了活动的网络接口，使用它
+		if strings.HasPrefix(info.InterfaceName, "en") {
+			activeInterface = "Wi-Fi"
+		} else if strings.HasPrefix(info.InterfaceName, "eth") {
+			activeInterface = "Ethernet"
+		}
+	}
+	
+	// 检查HTTP代理
+	httpOutput, err := runCommand("networksetup", "-getwebproxy", activeInterface)
+	if err == nil {
+		httpEnabledRegex := regexp.MustCompile(`Enabled: (.+)`)
+		httpMatches := httpEnabledRegex.FindStringSubmatch(httpOutput)
+		
+		if len(httpMatches) > 1 && httpMatches[1] == "Yes" {
+			// HTTP代理已启用
+			info.ProxyInfo.Enabled = true
+			info.ProxyInfo.HTTPEnabled = true
+			info.ProxyStatus = true
+			
+			// 获取代理服务器和端口
 			serverRegex := regexp.MustCompile(`Server: (.+)`)
 			portRegex := regexp.MustCompile(`Port: (.+)`)
-
-			serverMatches := serverRegex.FindStringSubmatch(output)
-			portMatches := portRegex.FindStringSubmatch(output)
-
+			
+			serverMatches := serverRegex.FindStringSubmatch(httpOutput)
+			portMatches := portRegex.FindStringSubmatch(httpOutput)
+			
 			if len(serverMatches) > 1 && len(portMatches) > 1 {
 				portNum, _ := strconv.Atoi(portMatches[1])
-				info.ProxyInfo = model.ProxyInfo{
-					Enabled: true,
-					Server:  serverMatches[1],
-					Port:    portNum,
-				}
-			}
-		} else {
-			info.ProxyInfo = model.ProxyInfo{
-				Enabled: false,
+				info.ProxyInfo.HTTPServer = serverMatches[1]
+				info.ProxyInfo.HTTPPort = portNum
 			}
 		}
 	}
-
+	
+	// 检查HTTPS代理
+	httpsOutput, err := runCommand("networksetup", "-getsecurewebproxy", activeInterface)
+	if err == nil {
+		httpsEnabledRegex := regexp.MustCompile(`Enabled: (.+)`)
+		httpsMatches := httpsEnabledRegex.FindStringSubmatch(httpsOutput)
+		
+		if len(httpsMatches) > 1 && httpsMatches[1] == "Yes" {
+			// HTTPS代理已启用
+			info.ProxyInfo.Enabled = true
+			info.ProxyInfo.HTTPSEnabled = true
+			info.ProxyStatus = true
+			
+			// 获取代理服务器和端口
+			serverRegex := regexp.MustCompile(`Server: (.+)`)
+			portRegex := regexp.MustCompile(`Port: (.+)`)
+			
+			serverMatches := serverRegex.FindStringSubmatch(httpsOutput)
+			portMatches := portRegex.FindStringSubmatch(httpsOutput)
+			
+			if len(serverMatches) > 1 && len(portMatches) > 1 {
+				portNum, _ := strconv.Atoi(portMatches[1])
+				info.ProxyInfo.HTTPSServer = serverMatches[1]
+				info.ProxyInfo.HTTPSPort = portNum
+			}
+		}
+	}
+	
+	// 检查SOCKS代理
+	socksOutput, err := runCommand("networksetup", "-getsocksfirewallproxy", activeInterface)
+	if err == nil {
+		socksEnabledRegex := regexp.MustCompile(`Enabled: (.+)`)
+		socksMatches := socksEnabledRegex.FindStringSubmatch(socksOutput)
+		
+		if len(socksMatches) > 1 && socksMatches[1] == "Yes" {
+			// SOCKS代理已启用
+			info.ProxyInfo.Enabled = true
+			info.ProxyInfo.SOCKSEnabled = true
+			info.ProxyStatus = true
+			
+			// 获取代理服务器和端口
+			serverRegex := regexp.MustCompile(`Server: (.+)`)
+			portRegex := regexp.MustCompile(`Port: (.+)`)
+			
+			serverMatches := serverRegex.FindStringSubmatch(socksOutput)
+			portMatches := portRegex.FindStringSubmatch(socksOutput)
+			
+			if len(serverMatches) > 1 && len(portMatches) > 1 {
+				portNum, _ := strconv.Atoi(portMatches[1])
+				info.ProxyInfo.SOCKSServer = serverMatches[1]
+				info.ProxyInfo.SOCKSPort = portNum
+			}
+		}
+	}
+	
+	// 检查自动代理配置
+	pacOutput, err := runCommand("networksetup", "-getautoproxyurl", activeInterface)
+	if err == nil {
+		pacEnabledRegex := regexp.MustCompile(`Enabled: (.+)`)
+		pacMatches := pacEnabledRegex.FindStringSubmatch(pacOutput)
+		
+		if len(pacMatches) > 1 && pacMatches[1] == "Yes" {
+			// 自动代理配置已启用
+			info.ProxyInfo.Enabled = true
+			info.ProxyInfo.AutoConfigEnabled = true
+			info.ProxyStatus = true
+			
+			// 获取PAC URL
+			urlRegex := regexp.MustCompile(`URL: (.+)`)
+			urlMatches := urlRegex.FindStringSubmatch(pacOutput)
+			
+			if len(urlMatches) > 1 {
+				info.ProxyInfo.AutoConfigURL = urlMatches[1]
+			}
+		}
+	}
+	
+	// 检查系统环境变量中的代理设置
+	envOutput, err := runCommand("env")
+	if err == nil {
+		// 检查HTTP_PROXY环境变量
+		if strings.Contains(envOutput, "HTTP_PROXY=") || strings.Contains(envOutput, "http_proxy=") {
+			info.ProxyInfo.Enabled = true
+			info.ProxyInfo.EnvProxyEnabled = true
+			info.ProxyStatus = true
+		}
+		
+		// 检查HTTPS_PROXY环境变量
+		if strings.Contains(envOutput, "HTTPS_PROXY=") || strings.Contains(envOutput, "https_proxy=") {
+			info.ProxyInfo.Enabled = true
+			info.ProxyInfo.EnvProxyEnabled = true
+			info.ProxyStatus = true
+		}
+		
+		// 检查ALL_PROXY环境变量
+		if strings.Contains(envOutput, "ALL_PROXY=") || strings.Contains(envOutput, "all_proxy=") {
+			info.ProxyInfo.Enabled = true
+			info.ProxyInfo.EnvProxyEnabled = true
+			info.ProxyStatus = true
+		}
+	}
+	
+	// 检查是否有代理软件正在运行
+	psOutput, err := runCommand("ps", "aux")
+	if err == nil {
+		proxyApps := []string{
+			"Proxifier", "Charles", "Fiddler", "mitmproxy", "Burp", "tinyproxy",
+			"Surge", "ClashX", "V2rayU", "ShadowsocksX", "Lantern", "Outline",
+		}
+		
+		for _, app := range proxyApps {
+			if strings.Contains(psOutput, app) {
+				info.ProxyInfo.Enabled = true
+				info.ProxyInfo.ProxyAppRunning = true
+				info.ProxyInfo.ProxyAppName = app
+				info.ProxyStatus = true
+				
+				break
+			}
+		}
+	}
+	
 	return nil
 }
 

@@ -20,13 +20,12 @@ import (
 	"github.com/shirou/gopsutil/v3/process"
 )
 
-// 定义WMI查询结构体
 type win32Battery struct {
-	BatteryStatus       uint16
+	BatteryStatus            uint16
 	EstimatedChargeRemaining uint16
-	DesignVoltage       uint32
-	FullChargeCapacity  uint32
-	Name                string
+	DesignVoltage            uint32
+	FullChargeCapacity       uint32
+	Name                     string
 }
 
 type win32ACAdapter struct {
@@ -38,30 +37,30 @@ type win32ACAdapter struct {
 }
 
 type win32TemperatureSensor struct {
-	Name        string
+	Name           string
 	CurrentReading uint32
-	Location    string
+	Location       string
 }
 
 type win32VideoController struct {
-	Name                 string
-	Description          string
-	AdapterRAM           uint64
-	DriverVersion        string
-	VideoProcessor       string
-	VideoModeDescription string
-	CurrentRefreshRate   uint32
+	Name                        string
+	Description                 string
+	AdapterRAM                  uint64
+	DriverVersion               string
+	VideoProcessor              string
+	VideoModeDescription        string
+	CurrentRefreshRate          uint32
 	CurrentHorizontalResolution uint32
-	CurrentVerticalResolution uint32
-	Manufacturer         string
+	CurrentVerticalResolution   uint32
+	Manufacturer                string
 }
 
 type win32DesktopMonitor struct {
-	Name                 string
-	MonitorManufacturer  string
-	MonitorType          string
-	ScreenHeight         uint32
-	ScreenWidth          uint32
+	Name                string
+	MonitorManufacturer string
+	MonitorType         string
+	ScreenHeight        uint32
+	ScreenWidth         uint32
 }
 
 // GetDynamicInfo 获取Windows系统的动态信息
@@ -79,7 +78,7 @@ func GetDynamicInfo() (model.SystemInfo, error) {
 			if err != nil {
 				continue
 			}
-			
+
 			info.DiskUsage = append(info.DiskUsage, model.DiskPartitionInfo{
 				MountPoint: p.Mountpoint,
 				Total:      usage.Total,
@@ -107,6 +106,12 @@ func GetDynamicInfo() (model.SystemInfo, error) {
 		}
 	}
 
+	// 获取系统使用率（CPU和GPU）
+	err = getSystemUsage(&info)
+	if err != nil {
+		log.Printf("Error getting system usage: %v", err)
+	}
+
 	// 获取电池信息
 	batteryInfo, err := getBatteryInfo()
 	if err != nil {
@@ -132,11 +137,11 @@ func GetDynamicInfo() (model.SystemInfo, error) {
 	}
 
 	// 获取温度信息
-	tempInfo, err := getTemperatureInfo()
+	temperatureInfo, err := getTemperatureInfo()
 	if err != nil {
 		log.Printf("Error getting temperature info: %v", err)
 	} else {
-		info.Temperature = tempInfo
+		info.Temperature = temperatureInfo
 	}
 
 	// 获取网卡信息
@@ -178,12 +183,12 @@ func GetDynamicInfo() (model.SystemInfo, error) {
 	if err == nil {
 		bootTimeT := time.Unix(int64(bootTime), 0)
 		uptime := time.Since(bootTimeT)
-		
+
 		// 格式化启动时间
 		days := int(uptime.Hours()) / 24
 		hours := int(uptime.Hours()) % 24
 		minutes := int(uptime.Minutes()) % 60
-		
+
 		if days > 0 {
 			info.UpTime = fmt.Sprintf("%d天%d小时%d分钟", days, hours, minutes)
 		} else {
@@ -194,14 +199,126 @@ func GetDynamicInfo() (model.SystemInfo, error) {
 	return info, nil
 }
 
+func getSystemUsage(info *model.SystemInfo) error {
+	// 获取CPU使用率
+	cpuPercent, err := cpu.Percent(time.Second, false)
+	if err != nil {
+		log.Printf("获取CPU使用率失败: %v", err)
+	} else if len(cpuPercent) > 0 {
+		// 将CPU使用率设置到SystemInfo结构体中
+		info.CPUUsage = cpuPercent[0]
+		
+		// 同时添加到温度传感器中，保持向后兼容
+		cpuUsageSensor := model.TempSensorInfo{
+			Name:        "CPU使用率",
+			Temperature: cpuPercent[0],
+			Location:    "处理器",
+			Sensor:      "CPU",
+			Value:       cpuPercent[0],
+		}
+		
+		// 添加到温度传感器列表
+		info.Temperature = append(info.Temperature, cpuUsageSensor)
+	}
+
+	// 获取GPU使用率
+	gpuUsage := 0.0
+	gpuFound := false
+
+	// 定义WMI查询结构体
+	type win32PerfFormattedData_GPUPerformance struct {
+		Name                 string
+		PercentGPUTime       uint64
+		PercentGPUUtilization uint64
+	}
+
+	// 查询GPU性能计数器
+	var gpuPerf []win32PerfFormattedData_GPUPerformance
+	err = safeWMIQuery("SELECT Name, PercentGPUTime, PercentGPUUtilization FROM Win32_PerfFormattedData_GPUPerformance", &gpuPerf)
+	
+	if err == nil && len(gpuPerf) > 0 {
+		// 使用PercentGPUTime或PercentGPUUtilization，取决于哪个可用
+		for _, gpu := range gpuPerf {
+			if gpu.PercentGPUUtilization > 0 {
+				gpuUsage = float64(gpu.PercentGPUUtilization)
+				gpuFound = true
+				break
+			}
+			if gpu.PercentGPUTime > 0 {
+				gpuUsage = float64(gpu.PercentGPUTime)
+				gpuFound = true
+				break
+			}
+		}
+	}
+
+	// 如果WMI查询失败或没有返回数据，尝试使用命令行工具
+	if !gpuFound {
+		cmd := exec.Command("powershell", "-Command", "Get-Counter -Counter \"\\GPU Engine(*)\\Utilization Percentage\" -SampleInterval 1 -MaxSamples 1")
+		output, err := cmd.Output()
+		if err == nil {
+			outputStr := string(output)
+			// 查找GPU使用率
+			re := regexp.MustCompile(`(\d+(\.\d+)?)`)
+			matches := re.FindStringSubmatch(outputStr)
+			if len(matches) > 1 {
+				gpuUsage, err = strconv.ParseFloat(matches[1], 64)
+				if err == nil {
+					gpuFound = true
+				}
+			}
+		}
+	}
+
+	// 如果以上方法都失败，尝试使用NVIDIA SMI工具（如果安装了NVIDIA显卡）
+	if !gpuFound {
+		cmd := exec.Command("nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits")
+		output, err := cmd.Output()
+		if err == nil {
+			outputStr := strings.TrimSpace(string(output))
+			gpuUsage, err = strconv.ParseFloat(outputStr, 64)
+			if err == nil {
+				gpuFound = true
+			}
+		}
+	}
+
+	// 如果所有方法都失败，使用CPU使用率作为近似值
+	if !gpuFound && len(cpuPercent) > 0 {
+		// 这只是一个非常粗略的近似值
+		gpuUsage = cpuPercent[0] * 0.8
+		gpuFound = true
+	}
+
+	// 如果找到了GPU使用率，设置到SystemInfo结构体中
+	if gpuFound {
+		// 将GPU使用率设置到SystemInfo结构体中
+		info.GPUUsage = gpuUsage
+		
+		// 同时添加到温度传感器中，保持向后兼容
+		gpuUsageSensor := model.TempSensorInfo{
+			Name:        "GPU使用率",
+			Temperature: gpuUsage,
+			Location:    "图形处理器",
+			Sensor:      "GPU",
+			Value:       gpuUsage,
+		}
+		
+		// 添加到温度传感器列表
+		info.Temperature = append(info.Temperature, gpuUsageSensor)
+	}
+
+	return nil
+}
+
 // getBatteryInfo 获取电池信息
 func getBatteryInfo() (model.BatteryInfo, error) {
 	var batteryInfo model.BatteryInfo
-	
+
 	// 通过WMI查询电池信息
 	var batteries []win32Battery
 	err := safeWMIQuery("SELECT BatteryStatus, EstimatedChargeRemaining, DesignVoltage, FullChargeCapacity, Name FROM Win32_Battery", &batteries)
-	
+
 	if err != nil || len(batteries) == 0 {
 		// 尝试使用PowerShell命令获取电池信息
 		cmd := exec.Command("powershell", "-Command", "Get-WmiObject -Class Win32_Battery | Select-Object BatteryStatus, EstimatedChargeRemaining, Name")
@@ -209,10 +326,10 @@ func getBatteryInfo() (model.BatteryInfo, error) {
 		if err != nil {
 			return batteryInfo, fmt.Errorf("error getting battery info: %v", err)
 		}
-		
+
 		// 解析输出
 		outputStr := string(output)
-		
+
 		// 提取电池状态
 		statusRegex := regexp.MustCompile(`BatteryStatus\s+:\s+(\d+)`)
 		statusMatches := statusRegex.FindStringSubmatch(outputStr)
@@ -220,7 +337,7 @@ func getBatteryInfo() (model.BatteryInfo, error) {
 			status, _ := strconv.Atoi(statusMatches[1])
 			batteryInfo.IsCharging = (status == 2) // 2表示正在充电
 		}
-		
+
 		// 提取电池电量
 		percentRegex := regexp.MustCompile(`EstimatedChargeRemaining\s+:\s+(\d+)`)
 		percentMatches := percentRegex.FindStringSubmatch(outputStr)
@@ -228,20 +345,20 @@ func getBatteryInfo() (model.BatteryInfo, error) {
 			percent, _ := strconv.Atoi(percentMatches[1])
 			batteryInfo.Percentage = percent
 		}
-		
+
 		batteryInfo.IsPresent = true
 		batteryInfo.Health = "Normal" // 默认值
-		
+
 		return batteryInfo, nil
 	}
-	
+
 	// 处理WMI查询结果
 	battery := batteries[0]
-	
+
 	// 设置电池状态
 	batteryInfo.IsPresent = true
 	batteryInfo.Percentage = int(battery.EstimatedChargeRemaining)
-	
+
 	// 根据BatteryStatus确定充电状态
 	// 1: 电池放电, 2: 电池正在充电, 3: 电池充满, 其他值: 未知状态
 	switch battery.BatteryStatus {
@@ -258,28 +375,28 @@ func getBatteryInfo() (model.BatteryInfo, error) {
 		batteryInfo.IsCharging = false
 		batteryInfo.Status = "Unknown"
 	}
-	
+
 	// 设置电池健康状态（Windows没有直接提供此信息，使用默认值）
 	batteryInfo.Health = "Normal"
-	
+
 	// 获取电池循环计数（Windows没有直接提供此信息，使用0作为默认值）
 	batteryInfo.CycleCount = 0
-	
+
 	return batteryInfo, nil
 }
 
 // getACAdapterInfo 获取交流充电器信息
 func getACAdapterInfo() (model.ACAdapterInfo, error) {
 	var adapterInfo model.ACAdapterInfo
-	
+
 	// 通过WMI查询交流充电器信息
 	var adapters []win32ACAdapter
 	err := safeWMIQuery("SELECT DeviceID, Name, Manufacturer, Description, Status FROM Win32_PortableBattery", &adapters)
-	
+
 	// 检查电池状态以确定充电器是否连接
 	var batteries []win32Battery
 	batteryErr := safeWMIQuery("SELECT BatteryStatus FROM Win32_Battery", &batteries)
-	
+
 	if batteryErr == nil && len(batteries) > 0 {
 		// BatteryStatus为2表示正在充电，这意味着充电器已连接
 		adapterInfo.Connected = (batteries[0].BatteryStatus == 2)
@@ -299,7 +416,7 @@ func getACAdapterInfo() (model.ACAdapterInfo, error) {
 			}
 		}
 	}
-	
+
 	if err != nil || len(adapters) == 0 {
 		// 如果WMI查询失败，尝试使用PowerShell命令
 		if adapterInfo.Connected {
@@ -309,38 +426,38 @@ func getACAdapterInfo() (model.ACAdapterInfo, error) {
 			adapterInfo.ChipModel = "Unknown"
 			adapterInfo.Wattage = 0
 		}
-		
+
 		return adapterInfo, nil
 	}
-	
+
 	// 处理WMI查询结果
 	adapter := adapters[0]
-	
+
 	adapterInfo.Name = adapter.Name
 	adapterInfo.SerialNum = adapter.DeviceID
 	adapterInfo.ChipModel = adapter.Manufacturer
 	adapterInfo.Wattage = 0 // Windows没有直接提供此信息
-	
+
 	return adapterInfo, nil
 }
 
 // getBluetoothInfo 获取蓝牙信息
 func getBluetoothInfo() (model.BluetoothInfo, error) {
 	var bluetoothInfo model.BluetoothInfo
-	
+
 	// 使用PowerShell命令获取蓝牙信息
 	cmd := exec.Command("powershell", "-Command", "Get-PnpDevice | Where-Object {$_.Class -eq 'Bluetooth'}")
 	output, err := cmd.Output()
 	if err != nil {
 		return bluetoothInfo, fmt.Errorf("error getting bluetooth info: %v", err)
 	}
-	
+
 	// 解析输出
 	outputStr := string(output)
-	
+
 	// 检查蓝牙是否可用
 	bluetoothInfo.IsAvailable = strings.Contains(outputStr, "Bluetooth")
-	
+
 	if bluetoothInfo.IsAvailable {
 		// 检查蓝牙是否启用
 		if strings.Contains(outputStr, "OK") {
@@ -350,14 +467,14 @@ func getBluetoothInfo() (model.BluetoothInfo, error) {
 			bluetoothInfo.Enabled = false
 			bluetoothInfo.Status = "关闭"
 		}
-		
+
 		// 获取已连接的蓝牙设备
 		deviceCmd := exec.Command("powershell", "-Command", "Get-PnpDevice | Where-Object {$_.Class -eq 'Bluetooth' -and $_.Status -eq 'OK'}")
 		deviceOutput, err := deviceCmd.Output()
 		if err == nil {
 			deviceOutputStr := string(deviceOutput)
 			lines := strings.Split(deviceOutputStr, "\n")
-			
+
 			for _, line := range lines {
 				if strings.Contains(line, "Bluetooth") && !strings.Contains(line, "Radio") {
 					fields := regexp.MustCompile(`\s+`).Split(strings.TrimSpace(line), -1)
@@ -371,15 +488,12 @@ func getBluetoothInfo() (model.BluetoothInfo, error) {
 			}
 		}
 	}
-	
+
 	return bluetoothInfo, nil
 }
 
-// getTemperatureInfo 获取温度信息
 func getTemperatureInfo() ([]model.TempSensorInfo, error) {
 	var tempInfo []model.TempSensorInfo
-	
-	// 首先尝试使用Win32_TemperatureProbe类获取温度信息
 	var tempProbes []struct {
 		Name             string
 		CurrentReading   int32
@@ -389,26 +503,26 @@ func getTemperatureInfo() ([]model.TempSensorInfo, error) {
 		LocationInstance string
 	}
 	err := safeWMIQuery("SELECT Name, CurrentReading, Description, DeviceID, Status, LocationInstance FROM Win32_TemperatureProbe", &tempProbes)
-	
+
 	if err == nil && len(tempProbes) > 0 {
 		for _, probe := range tempProbes {
 			// Win32_TemperatureProbe的温度通常以摄氏度的10倍表示
 			temp := float64(probe.CurrentReading) / 10.0
-			
+
 			// 跳过无效的温度值
 			if temp <= 0 || temp > 120 {
 				continue
 			}
-			
+
 			location := "System"
-			if strings.Contains(strings.ToLower(probe.Name), "cpu") || 
-			   strings.Contains(strings.ToLower(probe.Description), "cpu") {
+			if strings.Contains(strings.ToLower(probe.Name), "cpu") ||
+				strings.Contains(strings.ToLower(probe.Description), "cpu") {
 				location = "Processor"
-			} else if strings.Contains(strings.ToLower(probe.Name), "gpu") || 
-			          strings.Contains(strings.ToLower(probe.Description), "gpu") {
+			} else if strings.Contains(strings.ToLower(probe.Name), "gpu") ||
+				strings.Contains(strings.ToLower(probe.Description), "gpu") {
 				location = "Graphics"
 			}
-			
+
 			tempInfo = append(tempInfo, model.TempSensorInfo{
 				Name:        probe.Name,
 				Temperature: temp,
@@ -417,26 +531,23 @@ func getTemperatureInfo() ([]model.TempSensorInfo, error) {
 				Value:       temp,
 			})
 		}
-		
+
 		if len(tempInfo) > 0 {
 			return tempInfo, nil
 		}
 	}
-	
-	// 如果Win32_TemperatureProbe不可用，尝试使用Win32_TemperatureSensor
+
 	var sensors []win32TemperatureSensor
 	err = safeWMIQuery("SELECT Name, CurrentReading, Location FROM Win32_TemperatureSensor", &sensors)
-	
+
 	if err == nil && len(sensors) > 0 {
 		for _, sensor := range sensors {
-			// WMI温度通常以摄氏度的10倍表示
 			temp := float64(sensor.CurrentReading) / 10.0
-			
-			// 跳过无效的温度值
+
 			if temp <= 0 || temp > 120 {
 				continue
 			}
-			
+
 			tempInfo = append(tempInfo, model.TempSensorInfo{
 				Name:        sensor.Name,
 				Temperature: temp,
@@ -445,37 +556,35 @@ func getTemperatureInfo() ([]model.TempSensorInfo, error) {
 				Value:       temp,
 			})
 		}
-		
+
 		if len(tempInfo) > 0 {
 			return tempInfo, nil
 		}
 	}
-	
-	// 尝试使用OpenHardwareMonitor获取温度信息
-	// 注意：这需要用户安装OpenHardwareMonitor
+
 	ohwmPath := "C:\\Program Files\\OpenHardwareMonitor\\OpenHardwareMonitor.exe"
 	cmd := exec.Command(ohwmPath, "/report")
 	output, err := cmd.Output()
-	
+
 	if err == nil {
-		// 解析OpenHardwareMonitor输出
+
 		outputStr := string(output)
 		lines := strings.Split(outputStr, "\n")
-		
+
 		inTempSection := false
 		for _, line := range lines {
 			line = strings.TrimSpace(line)
-			
+
 			if strings.Contains(line, "Temperatures:") {
 				inTempSection = true
 				continue
 			}
-			
+
 			if inTempSection && line == "" {
 				inTempSection = false
 				continue
 			}
-			
+
 			if inTempSection {
 				fields := regexp.MustCompile(`\s+`).Split(line, -1)
 				if len(fields) >= 2 {
@@ -483,14 +592,14 @@ func getTemperatureInfo() ([]model.TempSensorInfo, error) {
 					tempStr = strings.TrimSuffix(tempStr, "°C")
 					temp, err := strconv.ParseFloat(tempStr, 64)
 					if err == nil {
-						// 确定温度传感器位置
+
 						location := "System"
 						if strings.Contains(strings.ToLower(fields[0]), "cpu") {
 							location = "Processor"
 						} else if strings.Contains(strings.ToLower(fields[0]), "gpu") {
 							location = "Graphics"
 						}
-						
+
 						tempInfo = append(tempInfo, model.TempSensorInfo{
 							Name:        fields[0],
 							Temperature: temp,
@@ -502,27 +611,27 @@ func getTemperatureInfo() ([]model.TempSensorInfo, error) {
 				}
 			}
 		}
-		
+
 		if len(tempInfo) > 0 {
 			return tempInfo, nil
 		}
 	}
-	
+
 	// 尝试使用sysctl命令获取CPU温度（适用于某些系统）
 	cmd = exec.Command("powershell", "-Command", "Get-WmiObject MSAcpi_ThermalZoneTemperature -Namespace \"root/wmi\"")
 	output, err = cmd.Output()
-	
+
 	if err == nil {
 		outputStr := string(output)
 		// 查找温度值
 		tempRegex := regexp.MustCompile(`CurrentTemperature\s*:\s*(\d+)`)
 		matches := tempRegex.FindStringSubmatch(outputStr)
-		
+
 		if len(matches) > 1 {
 			// ACPI温度通常以摄氏度的10分之1表示，需要转换
 			tempRaw, _ := strconv.ParseInt(matches[1], 10, 64)
-			temp := float64(tempRaw - 2732) / 10.0 // 转换开尔文到摄氏度
-			
+			temp := float64(tempRaw-2732) / 10.0 // 转换开尔文到摄氏度
+
 			if temp > 0 && temp < 120 {
 				tempInfo = append(tempInfo, model.TempSensorInfo{
 					Name:        "CPU",
@@ -531,19 +640,19 @@ func getTemperatureInfo() ([]model.TempSensorInfo, error) {
 					Sensor:      "ACPI",
 					Value:       temp,
 				})
-				
+
 				return tempInfo, nil
 			}
 		}
 	}
-	
+
 	// 如果以上方法都失败，使用CPU利用率作为近似值
 	cpuPercent, err := cpu.Percent(time.Second, false)
 	if err == nil && len(cpuPercent) > 0 {
 		// 这只是一个非常粗略的近似值
 		// 假设CPU温度与利用率成正比，基准温度为30°C，最高温度为90°C
 		estimatedTemp := 30.0 + (cpuPercent[0] * 0.6)
-		
+
 		tempInfo = append(tempInfo, model.TempSensorInfo{
 			Name:        "CPU",
 			Temperature: estimatedTemp,
@@ -551,10 +660,10 @@ func getTemperatureInfo() ([]model.TempSensorInfo, error) {
 			Sensor:      "Estimated",
 			Value:       estimatedTemp,
 		})
-		
+
 		return tempInfo, nil
 	}
-	
+
 	// 如果所有方法都失败，返回默认值
 	tempInfo = append(tempInfo, model.TempSensorInfo{
 		Name:        "CPU",
@@ -563,7 +672,7 @@ func getTemperatureInfo() ([]model.TempSensorInfo, error) {
 		Sensor:      "Unknown",
 		Value:       0.0,
 	})
-	
+
 	return tempInfo, nil
 }
 
@@ -581,14 +690,14 @@ func getNetworkCardInfo() ([]struct {
 
 	// 查询网卡信息
 	var adapters []struct {
-		Name             string
-		Description      string
-		MACAddress       string
-		AdapterType      string
-		DeviceID         string
-		NetConnectionID  string
-		Manufacturer     string
-		ProductName      string
+		Name            string
+		Description     string
+		MACAddress      string
+		AdapterType     string
+		DeviceID        string
+		NetConnectionID string
+		Manufacturer    string
+		ProductName     string
 	}
 	err := safeWMIQuery("SELECT Name, NetConnectionID, MACAddress, AdapterType, PhysicalAdapter, NetEnabled, ProductName FROM Win32_NetworkAdapter WHERE PhysicalAdapter=True", &adapters)
 	if err != nil {
@@ -784,72 +893,72 @@ func getDisplayInfo() ([]struct {
 // getInstalledApps 获取已安装应用
 func getInstalledApps() ([]model.AppInfo, error) {
 	var apps []model.AppInfo
-	
+
 	// 使用PowerShell命令获取已安装应用
 	cmd := exec.Command("powershell", "-Command", "Get-ItemProperty HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\* | Select-Object DisplayName, DisplayVersion, InstallDate | Where-Object {$_.DisplayName -ne $null}")
 	output, err := cmd.Output()
 	if err != nil {
 		return apps, fmt.Errorf("error getting installed apps: %v", err)
 	}
-	
+
 	// 解析输出
 	outputStr := string(output)
 	lines := strings.Split(outputStr, "\n")
-	
+
 	// 跳过前两行（表头）
 	for i := 2; i < len(lines); i++ {
 		line := strings.TrimSpace(lines[i])
 		if line == "" {
 			continue
 		}
-		
+
 		fields := regexp.MustCompile(`\s+`).Split(line, -1)
 		if len(fields) >= 2 {
 			app := model.AppInfo{
 				Name:    fields[0],
 				Version: fields[1],
 			}
-			
+
 			if len(fields) >= 3 {
 				app.InstallDate = fields[2]
 			}
-			
+
 			apps = append(apps, app)
 		}
 	}
-	
+
 	return apps, nil
 }
 
 // getRunningApps 获取正在运行的应用
 func getRunningApps() ([]model.ProcessInfo, error) {
 	var procs []model.ProcessInfo
-	
+
 	// 使用gopsutil获取进程信息
 	processes, err := process.Processes()
 	if err != nil {
 		return procs, fmt.Errorf("error getting running processes: %v", err)
 	}
-	
+
 	for _, p := range processes {
 		name, err := p.Name()
 		if err != nil {
 			continue
 		}
-		
+
 		pid := int(p.Pid)
-		
+
 		cpuPercent, _ := p.CPUPercent()
-		
+
 		memInfo, err := p.MemoryInfo()
 		var memUsage uint64
 		if err == nil && memInfo != nil {
 			memUsage = memInfo.RSS
 		}
-		
+
 		// 网络使用量无法直接获取，设为0
 		networkUsage := uint64(0)
-		
+
 		procs = append(procs, model.ProcessInfo{
 			PID:          pid,
 			Name:         name,
@@ -858,6 +967,84 @@ func getRunningApps() ([]model.ProcessInfo, error) {
 			NetworkUsage: networkUsage,
 		})
 	}
-	
+
 	return procs, nil
+}
+
+// getCPUUsage 获取CPU使用率
+func getCPUUsage() (float64, error) {
+	// 使用gopsutil获取CPU使用率
+	cpuPercent, err := cpu.Percent(time.Second, false)
+	if err != nil {
+		return 0, fmt.Errorf("获取CPU使用率失败: %v", err)
+	}
+
+	if len(cpuPercent) > 0 {
+		return cpuPercent[0], nil
+	}
+
+	return 0, nil
+}
+
+// getGPUUsage 获取GPU使用率
+func getGPUUsage() (float64, error) {
+	// 定义WMI查询结构体
+	type win32PerfFormattedData_GPUPerformance struct {
+		Name                 string
+		PercentGPUTime       uint64
+		PercentGPUUtilization uint64
+	}
+
+	// 查询GPU性能计数器
+	var gpuPerf []win32PerfFormattedData_GPUPerformance
+	err := safeWMIQuery("SELECT Name, PercentGPUTime, PercentGPUUtilization FROM Win32_PerfFormattedData_GPUPerformance", &gpuPerf)
+
+	if err == nil && len(gpuPerf) > 0 {
+		// 使用PercentGPUTime或PercentGPUUtilization，取决于哪个可用
+		for _, gpu := range gpuPerf {
+			if gpu.PercentGPUUtilization > 0 {
+				return float64(gpu.PercentGPUUtilization), nil
+			}
+			if gpu.PercentGPUTime > 0 {
+				return float64(gpu.PercentGPUTime), nil
+			}
+		}
+	}
+
+	// 如果WMI查询失败或没有返回数据，尝试使用命令行工具
+	cmd := exec.Command("powershell", "-Command", "Get-Counter -Counter \"\\GPU Engine(*)\\Utilization Percentage\" -SampleInterval 1 -MaxSamples 1")
+	output, err := cmd.Output()
+	if err == nil {
+		outputStr := string(output)
+		// 查找GPU使用率
+		re := regexp.MustCompile(`(\d+(\.\d+)?)`)
+		matches := re.FindStringSubmatch(outputStr)
+		if len(matches) > 1 {
+			gpuUsage, err := strconv.ParseFloat(matches[1], 64)
+			if err == nil {
+				return gpuUsage, nil
+			}
+		}
+	}
+
+	// 如果以上方法都失败，尝试使用NVIDIA SMI工具（如果安装了NVIDIA显卡）
+	cmd = exec.Command("nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits")
+	output, err = cmd.Output()
+	if err == nil {
+		outputStr := strings.TrimSpace(string(output))
+		gpuUsage, err := strconv.ParseFloat(outputStr, 64)
+		if err == nil {
+			return gpuUsage, nil
+		}
+	}
+
+	// 如果所有方法都失败，使用CPU使用率作为近似值
+	cpuPercent, err := cpu.Percent(time.Second, false)
+	if err == nil && len(cpuPercent) > 0 {
+		// 这只是一个非常粗略的近似值
+		return cpuPercent[0] * 0.8, nil
+	}
+
+	// 如果所有方法都失败，返回0
+	return 0, nil
 }
