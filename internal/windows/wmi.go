@@ -6,6 +6,8 @@ package windows
 import (
 	"fmt"
 	"log"
+	"os/exec"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -58,19 +60,128 @@ type win32ComputerSystemProduct struct {
 
 // safeWMIQuery :对wmi.Query 的安全封装
 func safeWMIQuery(query string, dst interface{}) error {
+	// 修正查询语句中可能存在的问题
+	query = strings.Replace(query, "SBLECT", "SELECT", -1)
+	
+	// 确保查询语句中的布尔值使用字符串表示
+	query = strings.Replace(query, "=True", "='TRUE'", -1)
+	query = strings.Replace(query, "=False", "='FALSE'", -1)
+	query = strings.Replace(query, "= True", "= 'TRUE'", -1)
+	query = strings.Replace(query, "= False", "= 'FALSE'", -1)
+	
+	// 检查命名空间
+	if !strings.Contains(query, "\\\\root\\") && strings.Contains(query, ":") {
+		parts := strings.Split(query, ":")
+		if len(parts) == 2 {
+			// 添加正确的命名空间格式
+			query = parts[0] + " FROM \\\\root\\wmi:" + parts[1]
+		}
+	}
+	
+	// 记录实际执行的查询语句
+	log.Printf("执行WMI查询: %s", query)
+	
 	// 使用当前版本的 wmi.Query 方法
 	err := wmi.Query(query, dst)
 	if err != nil {
 		// 记录错误，但不中断执行
-		log.Printf("WMI query failed: %v. Query: %s", err, query)
+		log.Printf("WMI查询失败: %v. 查询语句: %s", err, query)
 
-		// 检查是否是权限或者类不存在的错误
+		// 检查是否是字段不匹配错误
 		errStr := err.Error()
+		if strings.Contains(errStr, "cannot load field") && strings.Contains(errStr, "no such struct field") {
+			log.Printf("字段不匹配错误，需要修改结构体定义或查询语句")
+			
+			// 尝试解析出问题字段
+			fieldStart := strings.Index(errStr, "\"") + 1
+			fieldEnd := strings.Index(errStr[fieldStart:], "\"") + fieldStart
+			if fieldStart > 0 && fieldEnd > fieldStart {
+				problemField := errStr[fieldStart:fieldEnd]
+				log.Printf("问题字段: %s", problemField)
+				
+				// 尝试修改查询语句，移除问题字段
+				queryParts := strings.SplitN(query, " FROM ", 2)
+				if len(queryParts) == 2 {
+					selectPart := queryParts[0]
+					fromPart := queryParts[1]
+					
+					// 从SELECT部分移除问题字段
+					fields := strings.Split(strings.TrimPrefix(selectPart, "SELECT "), ", ")
+					var newFields []string
+					for _, field := range fields {
+						if !strings.Contains(field, problemField) {
+							newFields = append(newFields, field)
+						}
+					}
+					
+					if len(newFields) > 0 {
+						// 构建新的查询语句
+						newQuery := "SELECT " + strings.Join(newFields, ", ") + " FROM " + fromPart
+						log.Printf("尝试使用修改后的查询: %s", newQuery)
+						
+						// 重新执行查询
+						err = wmi.Query(newQuery, dst)
+						if err == nil {
+							log.Printf("修改后的查询成功")
+							return nil
+						} else {
+							log.Printf("修改后的查询仍然失败: %v", err)
+						}
+					}
+				}
+			}
+		}
+		
+		// 检查是否是权限或者类不存在的错误
 		if strings.Contains(errStr, "access denied") ||
 			strings.Contains(errStr, "not found") ||
-			strings.Contains(errStr, "invalid class") {
+			strings.Contains(errStr, "invalid class") ||
+			strings.Contains(errStr, "无效类") ||
+			strings.Contains(errStr, "无效查询") {
 			// 这可能是由于 Windows 版本不兼容导致的
-			log.Printf("This may be due to Windows version incompatibility")
+			log.Printf("可能是由于Windows版本不兼容导致的错误，尝试使用备用方法")
+			
+			// 尝试提取类名
+			classNameStart := strings.LastIndex(query, "FROM ") + 5
+			classNameEnd := len(query)
+			if strings.Contains(query[classNameStart:], " ") {
+				classNameEnd = classNameStart + strings.Index(query[classNameStart:], " ")
+			}
+			if classNameStart < classNameEnd {
+				className := query[classNameStart:classNameEnd]
+				log.Printf("问题类名: %s", className)
+			}
+		}
+	} else {
+		// 记录查询成功
+		resultCount := reflect.ValueOf(dst).Elem().Len()
+		log.Printf("WMI查询成功，返回结果数量: %v", resultCount)
+		
+		// 如果结果为空，可能是查询条件太严格
+		if resultCount == 0 {
+			log.Printf("查询结果为空，可能需要放宽查询条件")
+			
+			// 检查查询中是否有WHERE子句
+			if strings.Contains(strings.ToUpper(query), " WHERE ") {
+				// 尝试移除WHERE子句后的部分
+				queryParts := strings.SplitN(query, " WHERE ", 2)
+				if len(queryParts) == 2 {
+					newQuery := queryParts[0]
+					log.Printf("尝试使用无条件查询: %s", newQuery)
+					
+					// 重新执行查询
+					err = wmi.Query(newQuery, dst)
+					if err == nil {
+						resultCount = reflect.ValueOf(dst).Elem().Len()
+						log.Printf("无条件查询成功，返回结果数量: %v", resultCount)
+						if resultCount > 0 {
+							return nil
+						}
+					} else {
+						log.Printf("无条件查询失败: %v", err)
+					}
+				}
+			}
 		}
 	}
 	return err
@@ -86,13 +197,15 @@ func GetSystemInfo() (model.SystemInfo, error) {
 	// 通过调用host.Info()函数获取主机名和操作系统信息
 	hostInfo, err := host.Info()
 	if err != nil {
-		log.Printf("Error getting host info: %v", err)
+		log.Printf("获取主机信息失败: %v", err)
 	} else {
 		info.Hostname = hostInfo.Hostname
 		info.OS = hostInfo.Platform + " " + hostInfo.PlatformVersion
+		info.SystemVersion = hostInfo.PlatformVersion
+		info.ComputerName = hostInfo.Hostname
 
 		// 记录 Windows 版本信息，用于后续可能的版本特定查询
-		log.Printf("Windows version: %s %s", hostInfo.Platform, hostInfo.PlatformVersion)
+		log.Printf("Windows版本: %s %s", hostInfo.Platform, hostInfo.PlatformVersion)
 	}
 
 	// 获取计算机系统信息
@@ -108,6 +221,18 @@ func GetSystemInfo() (model.SystemInfo, error) {
 		if err == nil && marketingName != "" {
 			info.Model = marketingName
 		}
+	} else {
+		// 如果WMI查询失败，尝试使用命令行获取计算机型号
+		log.Printf("尝试使用命令行获取计算机型号")
+		cmd := exec.Command("wmic", "computersystem", "get", "model")
+		output, err := cmd.Output()
+		if err == nil {
+			lines := strings.Split(string(output), "\n")
+			if len(lines) > 1 {
+				info.Model = strings.TrimSpace(lines[1])
+				info.ModelID = info.Model
+			}
+		}
 	}
 
 	// 获取序列号
@@ -116,6 +241,17 @@ func GetSystemInfo() (model.SystemInfo, error) {
 	err = safeWMIQuery("SELECT SerialNumber FROM Win32_BIOS", &biosInfo)
 	if err == nil && len(biosInfo) > 0 {
 		info.SerialNumber = biosInfo[0].SerialNumber
+	} else {
+		// 如果WMI查询失败，尝试使用命令行获取序列号
+		log.Printf("尝试使用命令行获取序列号")
+		cmd := exec.Command("wmic", "bios", "get", "serialnumber")
+		output, err := cmd.Output()
+		if err == nil {
+			lines := strings.Split(string(output), "\n")
+			if len(lines) > 1 {
+				info.SerialNumber = strings.TrimSpace(lines[1])
+			}
+		}
 	}
 
 	// 获取CPU信息
@@ -129,7 +265,7 @@ func GetSystemInfo() (model.SystemInfo, error) {
 		}
 	} else {
 		// 如果WMI查询失败，尝试使用备用方法获取CPU信息
-		log.Printf("Falling back to alternative method for CPU info")
+		log.Printf("尝试使用备用方法获取CPU信息")
 
 		// 在某些Windows版本中，Win32_Processor可能有不同的属性名称
 		var altProcessors []struct {
@@ -145,10 +281,32 @@ func GetSystemInfo() (model.SystemInfo, error) {
 				Cores: int(altProcessors[0].CoreCount),
 			}
 		} else {
-			// 如果备选查询也失败，使用默认值
-			info.CPU = model.CPUInfo{
-				Model: "Unknown CPU",
-				Cores: 0,
+			// 如果备选查询也失败，尝试使用命令行获取CPU信息
+			log.Printf("尝试使用命令行获取CPU信息")
+			cmd := exec.Command("wmic", "cpu", "get", "name,numberofcores")
+			output, err := cmd.Output()
+			if err == nil {
+				lines := strings.Split(string(output), "\n")
+				if len(lines) > 1 {
+					fields := strings.Fields(lines[1])
+					if len(fields) > 0 {
+						cpuName := strings.Join(fields[:len(fields)-1], " ")
+						cores := 1
+						if len(fields) > 0 {
+							cores, _ = strconv.Atoi(fields[len(fields)-1])
+						}
+						info.CPU = model.CPUInfo{
+							Model: cpuName,
+							Cores: cores,
+						}
+					}
+				}
+			} else {
+				// 如果所有方法都失败，使用默认值
+				info.CPU = model.CPUInfo{
+					Model: "未知CPU",
+					Cores: 1,
+				}
 			}
 		}
 	}
@@ -160,7 +318,23 @@ func GetSystemInfo() (model.SystemInfo, error) {
 	// 通过调用mem.VirtualMemory()函数获取内存信息，并计算总内存和内存类型
 	memStats, err := mem.VirtualMemory()
 	if err != nil {
-		log.Printf("Error getting memory info: %v", err)
+		log.Printf("获取内存信息失败: %v", err)
+		// 尝试使用命令行获取内存信息
+		cmd := exec.Command("wmic", "computersystem", "get", "totalphysicalmemory")
+		output, err := cmd.Output()
+		if err == nil {
+			lines := strings.Split(string(output), "\n")
+			if len(lines) > 1 {
+				memStr := strings.TrimSpace(lines[1])
+				memBytes, err := strconv.ParseUint(memStr, 10, 64)
+				if err == nil {
+					info.Memory = model.MemoryInfo{
+						Total: memBytes,
+						Type:  "未知",
+					}
+				}
+			}
+		}
 	} else {
 		info.Memory = model.MemoryInfo{
 			Total: memStats.Total,
@@ -207,6 +381,31 @@ func GetSystemInfo() (model.SystemInfo, error) {
 					Serial: d.DiskSerial,
 				})
 			}
+		} else {
+			// 如果备选查询也失败，尝试使用命令行获取磁盘信息
+			log.Printf("尝试使用命令行获取磁盘信息")
+			cmd := exec.Command("wmic", "diskdrive", "get", "caption,model,size")
+			output, err := cmd.Output()
+			if err == nil {
+				lines := strings.Split(string(output), "\n")
+				for i, line := range lines {
+					if i > 0 && len(strings.TrimSpace(line)) > 0 {
+						fields := strings.Fields(line)
+						if len(fields) >= 3 {
+							diskName := fields[0]
+							diskModel := fields[1]
+							diskSize, _ := strconv.ParseUint(fields[2], 10, 64)
+							sizeGB := diskSize / (1024 * 1024 * 1024)
+							info.Disks = append(info.Disks, model.Disk{
+								Name:   diskName,
+								Model:  diskModel,
+								Size:   sizeGB,
+								Serial: "未知",
+							})
+						}
+					}
+				}
+			}
 		}
 	}
 
@@ -215,6 +414,17 @@ func GetSystemInfo() (model.SystemInfo, error) {
 	err = safeWMIQuery("SELECT UUID FROM Win32_ComputerSystemProduct", &systemProducts)
 	if err == nil && len(systemProducts) > 0 {
 		info.UUID = systemProducts[0].UUID
+	} else {
+		// 如果WMI查询失败，尝试使用命令行获取UUID
+		log.Printf("尝试使用命令行获取UUID")
+		cmd := exec.Command("wmic", "csproduct", "get", "uuid")
+		output, err := cmd.Output()
+		if err == nil {
+			lines := strings.Split(string(output), "\n")
+			if len(lines) > 1 {
+				info.UUID = strings.TrimSpace(lines[1])
+			}
+		}
 	}
 
 	return info, nil

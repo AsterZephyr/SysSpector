@@ -76,6 +76,7 @@ type WiFiInfo struct {
 	NSS            int     // 空间流数量
 	CountryCode    string  // WiFi国家/地区代码
 	SupportedPHY   string  // 支持的PHY模式
+	AuthMethod     string  // 认证方式
 }
 
 // DNSConfigInfo 表示DNS配置信息
