@@ -4,7 +4,9 @@
 package windows
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"log"
 	"os/exec"
 	"reflect"
@@ -14,6 +16,8 @@ import (
 	"github.com/StackExchange/wmi"
 	"github.com/shirou/gopsutil/v3/host"
 	"github.com/shirou/gopsutil/v3/mem"
+	"golang.org/x/text/encoding/simplifiedchinese"
+	"golang.org/x/text/transform"
 
 	"github.com/AsterZephyr/SysSpector/pkg/model"
 )
@@ -42,6 +46,44 @@ type win32BIOS struct {
 type win32PhysicalMemory struct {
 	Capacity   uint64 // 内存容量
 	MemoryType uint16 // 内存类型代码
+}
+
+// GBK到UTF-8的转换函数
+func gbkToUtf8(s []byte) ([]byte, error) {
+	reader := transform.NewReader(bytes.NewReader(s), simplifiedchinese.GBK.NewDecoder())
+	d, e := io.ReadAll(reader)
+	if e != nil {
+		return nil, e
+	}
+	return d, nil
+}
+
+// 转换GBK编码的字符串到UTF-8
+func convertGBKToUTF8(s string) string {
+	ret, err := gbkToUtf8([]byte(s))
+	if err != nil {
+		log.Printf("转换编码失败: %v", err)
+		return s
+	}
+	return string(ret)
+}
+
+// 执行命令并转换输出编码
+func execCmdWithGBKConversion(name string, args ...string) (string, error) {
+	cmd := exec.Command(name, args...)
+	output, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	
+	// 转换GBK编码到UTF-8
+	utf8Output, err := gbkToUtf8(output)
+	if err != nil {
+		log.Printf("转换命令输出编码失败: %v", err)
+		return string(output), nil
+	}
+	
+	return string(utf8Output), nil
 }
 
 // win32DiskDrive 表示磁盘驱动器信息
@@ -174,6 +216,13 @@ func safeWMIQuery(query string, dst interface{}) error {
 					if err == nil {
 						resultCount = reflect.ValueOf(dst).Elem().Len()
 						log.Printf("无条件查询成功，返回结果数量: %v", resultCount)
+						
+						// 安全检查：如果返回的结果数量过多，可能导致后续处理问题
+						// 特别是在处理网络适配器时，可能包含无效或不完整的数据
+						if resultCount > 10 {
+							log.Printf("警告：无条件查询返回结果数量过多，可能包含无效数据")
+						}
+						
 						if resultCount > 0 {
 							return nil
 						}
@@ -283,10 +332,9 @@ func GetSystemInfo() (model.SystemInfo, error) {
 		} else {
 			// 如果备选查询也失败，尝试使用命令行获取CPU信息
 			log.Printf("尝试使用命令行获取CPU信息")
-			cmd := exec.Command("wmic", "cpu", "get", "name,numberofcores")
-			output, err := cmd.Output()
+			outputStr, err := execCmdWithGBKConversion("wmic", "cpu", "get", "name,numberofcores")
 			if err == nil {
-				lines := strings.Split(string(output), "\n")
+				lines := strings.Split(outputStr, "\n")
 				if len(lines) > 1 {
 					fields := strings.Fields(lines[1])
 					if len(fields) > 0 {
@@ -320,10 +368,9 @@ func GetSystemInfo() (model.SystemInfo, error) {
 	if err != nil {
 		log.Printf("获取内存信息失败: %v", err)
 		// 尝试使用命令行获取内存信息
-		cmd := exec.Command("wmic", "computersystem", "get", "totalphysicalmemory")
-		output, err := cmd.Output()
+		outputStr, err := execCmdWithGBKConversion("wmic", "computersystem", "get", "totalphysicalmemory")
 		if err == nil {
-			lines := strings.Split(string(output), "\n")
+			lines := strings.Split(outputStr, "\n")
 			if len(lines) > 1 {
 				memStr := strings.TrimSpace(lines[1])
 				memBytes, err := strconv.ParseUint(memStr, 10, 64)
@@ -384,10 +431,9 @@ func GetSystemInfo() (model.SystemInfo, error) {
 		} else {
 			// 如果备选查询也失败，尝试使用命令行获取磁盘信息
 			log.Printf("尝试使用命令行获取磁盘信息")
-			cmd := exec.Command("wmic", "diskdrive", "get", "caption,model,size")
-			output, err := cmd.Output()
+			outputStr, err := execCmdWithGBKConversion("wmic", "diskdrive", "get", "caption,model,size")
 			if err == nil {
-				lines := strings.Split(string(output), "\n")
+				lines := strings.Split(outputStr, "\n")
 				for i, line := range lines {
 					if i > 0 && len(strings.TrimSpace(line)) > 0 {
 						fields := strings.Fields(line)
@@ -417,10 +463,9 @@ func GetSystemInfo() (model.SystemInfo, error) {
 	} else {
 		// 如果WMI查询失败，尝试使用命令行获取UUID
 		log.Printf("尝试使用命令行获取UUID")
-		cmd := exec.Command("wmic", "csproduct", "get", "uuid")
-		output, err := cmd.Output()
+		outputStr, err := execCmdWithGBKConversion("wmic", "csproduct", "get", "uuid")
 		if err == nil {
-			lines := strings.Split(string(output), "\n")
+			lines := strings.Split(outputStr, "\n")
 			if len(lines) > 1 {
 				info.UUID = strings.TrimSpace(lines[1])
 			}

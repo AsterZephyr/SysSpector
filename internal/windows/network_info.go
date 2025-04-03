@@ -16,25 +16,21 @@ import (
 	"strings"
 	"time"
 
-	"github.com/AsterZephyr/SysSpector/pkg/model"
 	"github.com/shirou/gopsutil/v3/net"
+
+	"github.com/AsterZephyr/SysSpector/pkg/model"
 )
 
 // 定义WMI查询结构体
 type win32NetworkAdapter struct {
-	Name                 string
-	NetConnectionID      string
-	MACAddress           string
-	Speed                uint64
-	AdapterType          string
-	PhysicalAdapter      bool
-	NetEnabled           bool
-	ProductName          string
-	ServiceName          string
-	DHCPEnabled          bool
-	IPAddress            []string
-	IPSubnet             []string
-	DefaultIPGateway     []string
+	Name            string
+	NetConnectionID string
+	MACAddress      string
+	AdapterType     string
+	PhysicalAdapter bool
+	NetEnabled      bool
+	ProductName     string
+	ServiceName     string
 }
 
 type win32NetworkAdapterConfiguration struct {
@@ -47,6 +43,8 @@ type win32NetworkAdapterConfiguration struct {
 	MACAddress           string
 }
 
+// 注意：GBK到UTF-8的转换函数已移至wmi.go
+
 // GetNetworkInfo 获取Windows系统的网络信息
 func GetNetworkInfo() (model.NetworkInfo, error) {
 	var info model.NetworkInfo
@@ -55,20 +53,19 @@ func GetNetworkInfo() (model.NetworkInfo, error) {
 	// 首先使用Win32_NetworkAdapter获取网络适配器基本信息
 	var adapters []win32NetworkAdapter
 	err = safeWMIQuery("SELECT Name, NetConnectionID, MACAddress, AdapterType, PhysicalAdapter, NetEnabled, ProductName, ServiceName FROM Win32_NetworkAdapter WHERE PhysicalAdapter = 'TRUE'", &adapters)
-	
+
 	// 然后使用Win32_NetworkAdapterConfiguration获取IP配置信息
 	var adapterConfigs []win32NetworkAdapterConfiguration
 	configErr := safeWMIQuery("SELECT Description, DHCPEnabled, IPAddress, IPSubnet, DefaultIPGateway, DNSServerSearchOrder, MACAddress FROM Win32_NetworkAdapterConfiguration WHERE IPEnabled = 'TRUE'", &adapterConfigs)
-	
+
 	// 如果WMI查询失败，使用备用方法
 	if (err != nil || len(adapters) == 0) && (configErr != nil || len(adapterConfigs) == 0) {
 		log.Printf("Error getting network adapters or configurations: %v, %v", err, configErr)
-		
+
 		// 使用ipconfig命令获取详细网络信息
-		cmd := exec.Command("ipconfig", "/all")
-		output, err := cmd.Output()
+		// 使用execCmdWithGBKConversion函数执行命令并处理中文输出
+		outputStr, err := execCmdWithGBKConversion("ipconfig", "/all")
 		if err == nil {
-			outputStr := string(output)
 
 			// 获取IP地址
 			ipRegex := regexp.MustCompile(`IPv4 地址.*?:\s*(.+)`)
@@ -163,36 +160,36 @@ func GetNetworkInfo() (model.NetworkInfo, error) {
 			}
 
 			// 检测是否连接了WiFi
-			if strings.Contains(outputStr, "Wireless") || 
-			   strings.Contains(outputStr, "Wi-Fi") || 
-			   strings.Contains(outputStr, "无线") {
+			if strings.Contains(outputStr, "Wireless") ||
+				strings.Contains(outputStr, "Wi-Fi") ||
+				strings.Contains(outputStr, "无线") {
 				info.WiFi.IsConnected = true
 			}
 		}
 	} else {
 		// WMI查询成功，处理查询结果
-		
+
 		// 处理网络适配器基本信息
 		var activeAdapter *win32NetworkAdapter
 		for i := range adapters {
 			if adapters[i].NetEnabled && adapters[i].PhysicalAdapter {
 				activeAdapter = &adapters[i]
-				
+
 				// 设置基本信息
 				info.MacAddress = adapters[i].MACAddress
 				info.InterfaceName = adapters[i].NetConnectionID
-				
+
 				// 设置WiFi连接状态
-				if strings.Contains(adapters[i].Name, "Wireless") || 
-				   strings.Contains(adapters[i].Name, "WiFi") || 
-				   strings.Contains(adapters[i].Name, "Wi-Fi") {
+				if strings.Contains(adapters[i].Name, "Wireless") ||
+					strings.Contains(adapters[i].Name, "WiFi") ||
+					strings.Contains(adapters[i].Name, "Wi-Fi") {
 					info.WiFi.IsConnected = adapters[i].NetEnabled
 				}
-				
+
 				break
 			}
 		}
-		
+
 		// 处理网络适配器配置信息
 		if configErr == nil && len(adapterConfigs) > 0 {
 			// 如果找到了活跃的适配器，尝试匹配对应的配置
@@ -203,27 +200,27 @@ func GetNetworkInfo() (model.NetworkInfo, error) {
 						if len(config.IPAddress) > 0 {
 							info.IP = config.IPAddress[0]
 						}
-						
+
 						// 获取子网掩码
 						if len(config.IPSubnet) > 0 {
 							info.SubnetMask = config.IPSubnet[0]
 						}
-						
+
 						// 获取网关
 						if len(config.DefaultIPGateway) > 0 {
 							info.Gateway = config.DefaultIPGateway[0]
 						}
-						
+
 						// 获取DNS服务器
 						info.DNSServers = config.DNSServerSearchOrder
-						
+
 						// 获取IP获取方式
 						if config.DHCPEnabled {
 							info.IPAcquisitionMode = "DHCP"
 						} else {
 							info.IPAcquisitionMode = "静态IP"
 						}
-						
+
 						break
 					}
 				}
@@ -234,27 +231,27 @@ func GetNetworkInfo() (model.NetworkInfo, error) {
 					if len(adapterConfigs[0].IPAddress) > 0 {
 						info.IP = adapterConfigs[0].IPAddress[0]
 					}
-					
+
 					// 获取子网掩码
 					if len(adapterConfigs[0].IPSubnet) > 0 {
 						info.SubnetMask = adapterConfigs[0].IPSubnet[0]
 					}
-					
+
 					// 获取网关
 					if len(adapterConfigs[0].DefaultIPGateway) > 0 {
 						info.Gateway = adapterConfigs[0].DefaultIPGateway[0]
 					}
-					
+
 					// 获取DNS服务器
 					info.DNSServers = adapterConfigs[0].DNSServerSearchOrder
-					
+
 					// 获取IP获取方式
 					if adapterConfigs[0].DHCPEnabled {
 						info.IPAcquisitionMode = "DHCP"
 					} else {
 						info.IPAcquisitionMode = "静态IP"
 					}
-					
+
 					// 获取MAC地址（如果前面没有获取到）
 					if info.MacAddress == "" {
 						info.MacAddress = adapterConfigs[0].MACAddress
@@ -265,15 +262,21 @@ func GetNetworkInfo() (model.NetworkInfo, error) {
 	}
 
 	// 使用netsh wlan show interfaces获取更详细的无线网络信息
-	if strings.Contains(strings.ToLower(info.InterfaceName), "wi-fi") || 
-	   strings.Contains(strings.ToLower(info.InterfaceName), "wireless") || 
-	   strings.Contains(strings.ToLower(info.InterfaceName), "wlan") {
+	if strings.Contains(strings.ToLower(info.InterfaceName), "wi-fi") ||
+		strings.Contains(strings.ToLower(info.InterfaceName), "wireless") ||
+		strings.Contains(strings.ToLower(info.InterfaceName), "wlan") {
 		cmd := exec.Command("netsh", "wlan", "show", "interfaces")
 		wlanOutput, err := cmd.Output()
 		if err == nil {
-			wlanOutputStr := string(wlanOutput)
+			// 转换GBK编码到UTF-8
+			utf8Output, err := gbkToUtf8(wlanOutput)
+			if err != nil {
+				log.Printf("转换WiFi接口信息编码失败: %v", err)
+				utf8Output = wlanOutput
+			}
+			wlanOutputStr := string(utf8Output)
 			log.Printf("获取到WiFi接口信息: %s", wlanOutputStr)
-			
+
 			// 获取SSID
 			ssidRegex := regexp.MustCompile(`SSID\s*:\s*(.+)`)
 			ssidMatches := ssidRegex.FindStringSubmatch(wlanOutputStr)
@@ -281,7 +284,7 @@ func GetNetworkInfo() (model.NetworkInfo, error) {
 				info.WiFi.SSID = strings.TrimSpace(ssidMatches[1])
 				log.Printf("解析到SSID: %s", info.WiFi.SSID)
 			}
-			
+
 			// 获取BSSID
 			bssidRegex := regexp.MustCompile(`BSSID\s*:\s*(.+)`)
 			bssidMatches := bssidRegex.FindStringSubmatch(wlanOutputStr)
@@ -289,7 +292,7 @@ func GetNetworkInfo() (model.NetworkInfo, error) {
 				info.WiFi.BSSID = strings.TrimSpace(bssidMatches[1])
 				log.Printf("解析到BSSID: %s", info.WiFi.BSSID)
 			}
-			
+
 			// 获取信号强度
 			signalRegex := regexp.MustCompile(`信号\s*:\s*(\d+)%`)
 			if !strings.Contains(wlanOutputStr, "信号") {
@@ -307,11 +310,11 @@ func GetNetworkInfo() (model.NetworkInfo, error) {
 				info.WiFi.SignalStrength = signalDBM
 				log.Printf("解析到信号强度: %d%%, 转换为RSSI: %d dBm", signalInt, signalDBM)
 			}
-			
+
 			// 设置默认噪声值
 			info.WiFi.Noise = -90 // 默认噪声值为-90dBm
 			log.Printf("设置默认噪声值: %d dBm", info.WiFi.Noise)
-			
+
 			// 获取频道
 			channelRegex := regexp.MustCompile(`信道\s*:\s*(\d+)`)
 			if !strings.Contains(wlanOutputStr, "信道") {
@@ -324,7 +327,7 @@ func GetNetworkInfo() (model.NetworkInfo, error) {
 				channelInt, _ := strconv.Atoi(channel)
 				info.WiFi.Channel = channelInt
 				log.Printf("解析到频道: %d", info.WiFi.Channel)
-				
+
 				// 设置频率 (根据频道计算)
 				if channelInt > 0 {
 					if channelInt <= 14 {
@@ -337,7 +340,7 @@ func GetNetworkInfo() (model.NetworkInfo, error) {
 					log.Printf("计算频率: %.3f GHz", info.WiFi.Frequency)
 				}
 			}
-			
+
 			// 获取传输速率
 			txRateRegex := regexp.MustCompile(`传输速率.+?:\s*(\d+\.?\d*)\s*(Mbps|Gbps)`)
 			if !strings.Contains(wlanOutputStr, "传输速率") {
@@ -354,7 +357,7 @@ func GetNetworkInfo() (model.NetworkInfo, error) {
 				}
 				info.WiFi.TxRate = int(txRateFloat)
 				log.Printf("解析到传输速率: %d Mbps", info.WiFi.TxRate)
-				
+
 				// 根据PHY模式和传输速率估算MCS索引和NSS
 				txRateNum := info.WiFi.TxRate
 				if strings.Contains(info.WiFi.PHYMode, "802.11ax") {
@@ -400,7 +403,7 @@ func GetNetworkInfo() (model.NetworkInfo, error) {
 					}
 				}
 			}
-			
+
 			// 获取无线模式
 			modeRegex := regexp.MustCompile(`无线电类型\s*:\s*(.+)`)
 			if !strings.Contains(wlanOutputStr, "无线电类型") {
@@ -411,7 +414,7 @@ func GetNetworkInfo() (model.NetworkInfo, error) {
 			if len(modeMatches) > 1 {
 				mode := strings.TrimSpace(modeMatches[1])
 				info.WiFi.PHYMode = mode
-				
+
 				// 设置支持的PHY模式
 				if strings.Contains(mode, "802.11ax") {
 					info.WiFi.SupportedPHY = "802.11 a/b/g/n/ac/ax"
@@ -422,7 +425,7 @@ func GetNetworkInfo() (model.NetworkInfo, error) {
 				} else {
 					info.WiFi.SupportedPHY = "802.11 a/b/g"
 				}
-				
+
 				// 估算MCS索引和NSS (空间流数量)
 				if info.WiFi.TxRate > 0 {
 					// 根据传输速率和PHY模式估算MCS和NSS
@@ -462,7 +465,7 @@ func GetNetworkInfo() (model.NetworkInfo, error) {
 					}
 				}
 			}
-			
+
 			// 获取认证方式
 			authRegex := regexp.MustCompile(`身份验证\s*:\s*(.+)`)
 			if !strings.Contains(wlanOutputStr, "身份验证") {
@@ -474,7 +477,7 @@ func GetNetworkInfo() (model.NetworkInfo, error) {
 				auth := strings.TrimSpace(authMatches[1])
 				info.WiFi.AuthMethod = auth
 			}
-			
+
 			// 获取国家/地区代码
 			countryRegex := regexp.MustCompile(`国家/地区代码\s*:\s*(.+)`)
 			if !strings.Contains(wlanOutputStr, "国家/地区代码") {
@@ -494,37 +497,39 @@ func GetNetworkInfo() (model.NetworkInfo, error) {
 	info.PublicIP = getPublicIP()
 	info.PublicIPSource = "通过外部API获取"
 	info.PublicIPDetails = "使用https://api.ipify.org服务"
-	
+
 	// 获取网络延迟、抖动和丢包信息
 	getNetworkLatency(&info)
-	
+
 	// 获取VPN状态
 	getVPNInfo(&info)
-	
+
 	// 获取网络代理状态
 	getProxyStatus(&info)
-	
+
 	// 获取路由表
 	info.RouteTable = getRouteTable()
-	
+
 	// 获取Hosts文件
 	hostEntries := getHostsFile()
 	if len(hostEntries) > 0 {
 		info.DNS.HostEntries = hostEntries
 	}
-	
+
 	// 获取国家/地区代码
 	info.CountryCode = getCountryCode()
-	
+
 	// 获取WiFi信息
 	wifiInfo, err := getWiFiInfo()
 	if err == nil {
 		info.WiFi = wifiInfo
+		log.Printf("成功获取WiFi信息: SSID=%s, BSSID=%s, RSSI=%d dBm, 噪声=%d dBm, 频道=%d, 频率=%.3f GHz, PHY模式=%s, Tx速率=%d Mbps, MCS=%d, NSS=%d",
+			wifiInfo.SSID, wifiInfo.BSSID, wifiInfo.RSSI, wifiInfo.Noise, wifiInfo.Channel, wifiInfo.Frequency, wifiInfo.PHYMode, wifiInfo.TxRate, wifiInfo.MCS, wifiInfo.NSS)
 	}
-	
+
 	// 获取网络流量
 	info.NetworkTraffic = getNetworkTraffic()
-	
+
 	return info, nil
 }
 
@@ -557,14 +562,12 @@ func getNetworkLatency(info *model.NetworkInfo) {
 		}
 
 		// 执行ping命令，发送5个包
-		cmd := exec.Command("ping", "-n", "5", target.host)
-		output, err := cmd.CombinedOutput()
+		outputStr, err := execCmdWithGBKConversion("ping", "-n", "5", target.host)
 		if err != nil {
 			continue
 		}
 
 		// 解析ping输出
-		outputStr := string(output)
 		targetInfo := model.TargetLatencyInfo{
 			TargetName: target.name,
 			TargetHost: target.host,
@@ -635,14 +638,22 @@ func getVPNInfo(info *model.NetworkInfo) {
 
 	// 检查VPN适配器
 	var adapters []win32NetworkAdapter
-	err := safeWMIQuery("SELECT Name, NetConnectionID, MACAddress, Speed, AdapterType, PhysicalAdapter, NetEnabled, ProductName, ServiceName FROM Win32_NetworkAdapter WHERE (Name LIKE '%VPN%' OR Name LIKE '%Virtual%' OR Name LIKE '%Tunnel%') AND NetEnabled=True", &adapters)
+	err := safeWMIQuery("SELECT Name, NetConnectionID, MACAddress, Speed, AdapterType, PhysicalAdapter, NetEnabled, ProductName, ServiceName FROM Win32_NetworkAdapter WHERE (Name LIKE '%VPN%' OR Name LIKE '%Virtual%' OR Name LIKE '%Tunnel%') AND NetEnabled='TRUE'", &adapters)
 
 	if err == nil && len(adapters) > 0 {
 		for _, adapter := range adapters {
+			// 安全检查NetEnabled字段
 			if adapter.NetEnabled {
 				vpnInfo.IsConnected = true
-				vpnInfo.Interfaces = append(vpnInfo.Interfaces, adapter.NetConnectionID)
-				vpnInfo.NodeName = adapter.NetConnectionID
+				// 确保NetConnectionID不为空
+				if adapter.NetConnectionID != "" {
+					vpnInfo.Interfaces = append(vpnInfo.Interfaces, adapter.NetConnectionID)
+					vpnInfo.NodeName = adapter.NetConnectionID
+				} else if adapter.Name != "" {
+					// 如果NetConnectionID为空，使用Name
+					vpnInfo.Interfaces = append(vpnInfo.Interfaces, adapter.Name)
+					vpnInfo.NodeName = adapter.Name
+				}
 				break
 			}
 		}
@@ -665,9 +676,9 @@ func getVPNInfo(info *model.NetworkInfo) {
 	}
 
 	for clientName, processName := range vpnClients {
-		cmd := exec.Command("tasklist", "/FI", fmt.Sprintf("IMAGENAME eq %s", processName))
-		output, err := cmd.CombinedOutput()
-		if err == nil && strings.Contains(string(output), processName) {
+		// 使用execCmdWithGBKConversion执行命令并处理中文输出
+		outputStr, err := execCmdWithGBKConversion("tasklist", "/FI", fmt.Sprintf("IMAGENAME eq %s", processName))
+		if err == nil && strings.Contains(outputStr, processName) {
 			vpnInfo.IsConnected = true
 			vpnInfo.ClientName = clientName
 			vpnInfo.NodeName = clientName + " VPN"
@@ -693,22 +704,20 @@ func getProxyStatus(info *model.NetworkInfo) {
 	}
 
 	// 检查系统代理设置
-	cmd := exec.Command("reg", "query", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings", "/v", "ProxyEnable")
-	output, err := cmd.CombinedOutput()
+	proxyEnableOutput, err := execCmdWithGBKConversion("reg", "query", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings", "/v", "ProxyEnable")
 
-	if err == nil && strings.Contains(string(output), "0x1") {
+	if err == nil && strings.Contains(proxyEnableOutput, "0x1") {
 		// 代理已启用
 		info.ProxyInfo.Enabled = true
 		info.ProxyStatus = true
 
 		// 获取代理服务器地址
-		cmd = exec.Command("reg", "query", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings", "/v", "ProxyServer")
-		output, err = cmd.CombinedOutput()
+		proxyServerOutput, err := execCmdWithGBKConversion("reg", "query", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings", "/v", "ProxyServer")
 
 		if err == nil {
 			// 提取代理服务器地址
 			proxyRegex := regexp.MustCompile(`ProxyServer\s+REG_SZ\s+(.+)`)
-			matches := proxyRegex.FindStringSubmatch(string(output))
+			matches := proxyRegex.FindStringSubmatch(proxyServerOutput)
 
 			if len(matches) > 1 {
 				proxyServer := strings.TrimSpace(matches[1])
@@ -736,9 +745,9 @@ func getProxyStatus(info *model.NetworkInfo) {
 	}
 
 	for _, app := range proxyApps {
-		cmd := exec.Command("tasklist", "/FI", fmt.Sprintf("IMAGENAME eq %s", app))
-		output, err := cmd.CombinedOutput()
-		if err == nil && strings.Contains(string(output), app) {
+		// 使用execCmdWithGBKConversion执行命令并处理中文输出
+		outputStr, err := execCmdWithGBKConversion("tasklist", "/FI", fmt.Sprintf("IMAGENAME eq %s", app))
+		if err == nil && strings.Contains(outputStr, app) {
 			info.ProxyInfo.Enabled = true
 			info.ProxyInfo.ProxyAppRunning = true
 			info.ProxyInfo.ProxyAppName = strings.TrimSuffix(app, ".exe")
@@ -790,15 +799,14 @@ func getRouteTable() []model.RouteEntry {
 	var routes []model.RouteEntry
 
 	// 使用route print命令获取路由表
-	cmd := exec.Command("route", "print")
-	output, err := cmd.Output()
+	outputStr, err := execCmdWithGBKConversion("route", "print")
 	if err != nil {
 		log.Printf("Error getting route table: %v", err)
 		return routes
 	}
 
 	// 解析输出
-	lines := strings.Split(string(output), "\n")
+	lines := strings.Split(outputStr, "\n")
 	inIPv4Section := false
 	headerFound := false
 
@@ -826,7 +834,7 @@ func getRouteTable() []model.RouteEntry {
 				}
 			}
 		}
-		
+
 		if !inIPv4Section {
 			continue
 		}
@@ -854,7 +862,7 @@ func getRouteTable() []model.RouteEntry {
 			if fields[0] == "Network" || fields[0] == "网络" || fields[0] == "" {
 				continue
 			}
-			
+
 			routes = append(routes, model.RouteEntry{
 				Destination: fields[0],
 				Gateway:     fields[1],
@@ -941,34 +949,31 @@ func getWiFiInfo() (model.WiFiInfo, error) {
 	var wifiInfo model.WiFiInfo
 
 	// 使用netsh命令获取WiFi信息
-	cmd := exec.Command("netsh", "wlan", "show", "interfaces")
-	output, err := cmd.Output()
+	outputStr, err := execCmdWithGBKConversion("netsh", "wlan", "show", "interfaces")
 	if err != nil {
-		return wifiInfo, fmt.Errorf("error getting WiFi info: %v", err)
+		return wifiInfo, fmt.Errorf("执行netsh wlan show interfaces命令失败: %v", err)
 	}
 
-	// 解析输出
-	outputStr := string(output)
-	log.Printf("获取到WiFi接口信息: %s", outputStr)
+	log.Printf("获取到WiFi接口信息:\n%s", outputStr)
 
-	// 提取SSID
-	ssidRegex := regexp.MustCompile(`SSID\s+:\s+(.+)`)
+	// 提取SSID - 支持中英文界面
+	ssidRegex := regexp.MustCompile(`(?:SSID|SSID\s+名称)\s*:\s*(.+)`)
 	ssidMatches := ssidRegex.FindStringSubmatch(outputStr)
 	if len(ssidMatches) > 1 {
 		wifiInfo.SSID = strings.TrimSpace(ssidMatches[1])
 		log.Printf("解析到SSID: %s", wifiInfo.SSID)
 	}
 
-	// 提取BSSID
-	bssidRegex := regexp.MustCompile(`BSSID\s+:\s+(.+)`)
+	// 提取BSSID - 支持中英文界面
+	bssidRegex := regexp.MustCompile(`(?:BSSID|BSSID\s+基本服务集标识符)\s*:\s*(.+)`)
 	bssidMatches := bssidRegex.FindStringSubmatch(outputStr)
 	if len(bssidMatches) > 1 {
 		wifiInfo.BSSID = strings.TrimSpace(bssidMatches[1])
 		log.Printf("解析到BSSID: %s", wifiInfo.BSSID)
 	}
 
-	// 提取信号强度
-	signalRegex := regexp.MustCompile(`Signal\s+:\s+(\d+)%`)
+	// 提取信号强度 - 支持中英文界面
+	signalRegex := regexp.MustCompile(`(?:Signal|信号)\s*:\s*(\d+)%`)
 	signalMatches := signalRegex.FindStringSubmatch(outputStr)
 	if len(signalMatches) > 1 {
 		signalStr := strings.TrimSpace(signalMatches[1])
@@ -987,8 +992,8 @@ func getWiFiInfo() (model.WiFiInfo, error) {
 		log.Printf("设置默认噪声值: %d dBm", wifiInfo.Noise)
 	}
 
-	// 提取频道
-	channelRegex := regexp.MustCompile(`Channel\s+:\s+(\d+)`)
+	// 提取频道 - 支持中英文界面
+	channelRegex := regexp.MustCompile(`(?:Channel|信道|频道)\s*:\s*(\d+)`)
 	channelMatches := channelRegex.FindStringSubmatch(outputStr)
 	if len(channelMatches) > 1 {
 		channel := strings.TrimSpace(channelMatches[1])
@@ -1009,8 +1014,8 @@ func getWiFiInfo() (model.WiFiInfo, error) {
 		}
 	}
 
-	// 提取PHY模式
-	radioTypeRegex := regexp.MustCompile(`Radio type\s+:\s+(.+)`)
+	// 提取PHY模式 - 支持中英文界面
+	radioTypeRegex := regexp.MustCompile(`(?:Radio type|无线电类型)\s*:\s*(.+)`)
 	radioTypeMatches := radioTypeRegex.FindStringSubmatch(outputStr)
 	if len(radioTypeMatches) > 1 {
 		radioType := strings.TrimSpace(radioTypeMatches[1])
@@ -1039,14 +1044,11 @@ func getWiFiInfo() (model.WiFiInfo, error) {
 	}
 
 	// 获取支持的PHY模式
-	cmd = exec.Command("netsh", "wlan", "show", "drivers")
-	output, err = cmd.Output()
+	driversOutputStr, err := execCmdWithGBKConversion("netsh", "wlan", "show", "drivers")
 	if err == nil {
-		outputStr = string(output)
-
-		// 提取支持的无线模式
-		supportedRegex := regexp.MustCompile(`Supported\s+802.11\s+protocols\s+:\s+(.+)`)
-		supportedMatches := supportedRegex.FindStringSubmatch(outputStr)
+		// 提取支持的无线模式 - 支持中英文界面
+		supportedRegex := regexp.MustCompile(`(?:Supported\s+802.11\s+protocols|支持的\s*802.11\s*协议)\s*:\s*(.+)`)
+		supportedMatches := supportedRegex.FindStringSubmatch(driversOutputStr)
 		if len(supportedMatches) > 1 {
 			supported := strings.TrimSpace(supportedMatches[1])
 
@@ -1079,19 +1081,22 @@ func getWiFiInfo() (model.WiFiInfo, error) {
 		}
 	}
 
-	// 获取传输速率
-	txRateRegex := regexp.MustCompile(`Transmit\s+rate\s+\(Mbps\)\s+:\s+(\d+\.?\d*)\s*(Mbps|Gbps)`)
+	// 获取传输速率 - 支持中英文界面
+	txRateRegex := regexp.MustCompile(`(?:Transmit\s+rate|传输速率)\s*(?:\(Mbps\))?\s*:\s*(\d+\.?\d*)\s*(Mbps|Gbps)?`)
 	txRateMatches := txRateRegex.FindStringSubmatch(outputStr)
-	if len(txRateMatches) > 2 {
+	if len(txRateMatches) > 1 {
 		txRate := strings.TrimSpace(txRateMatches[1])
-		unit := strings.TrimSpace(txRateMatches[2])
+		unit := "Mbps" // 默认单位
+		if len(txRateMatches) > 2 && txRateMatches[2] != "" {
+			unit = strings.TrimSpace(txRateMatches[2])
+		}
 		txRateFloat, _ := strconv.ParseFloat(txRate, 64)
 		if unit == "Gbps" {
 			txRateFloat *= 1000 // 转换为Mbps
 		}
 		wifiInfo.TxRate = int(txRateFloat)
 		log.Printf("解析到传输速率: %d Mbps", wifiInfo.TxRate)
-		
+
 		// 根据PHY模式和传输速率估算MCS索引和NSS
 		txRateNum := wifiInfo.TxRate
 		if strings.Contains(wifiInfo.PHYMode, "802.11ax") {
@@ -1137,16 +1142,13 @@ func getWiFiInfo() (model.WiFiInfo, error) {
 			}
 		}
 	}
-	
-	// 获取WiFi国家/地区代码
-	cmd = exec.Command("netsh", "wlan", "show", "settings")
-	output, err = cmd.Output()
-	if err == nil {
-		outputStr = string(output)
 
-		// 提取国家/地区代码
-		countryRegex := regexp.MustCompile(`Country or region\s+:\s+(.+)`)
-		countryMatches := countryRegex.FindStringSubmatch(outputStr)
+	// 获取WiFi国家/地区代码
+	settingsOutputStr, err := execCmdWithGBKConversion("netsh", "wlan", "show", "settings")
+	if err == nil {
+		// 提取国家/地区代码 - 支持中英文界面
+		countryRegex := regexp.MustCompile(`(?:Country or region|国家或地区)\s*:\s*(.+)`)
+		countryMatches := countryRegex.FindStringSubmatch(settingsOutputStr)
 		if len(countryMatches) > 1 {
 			country := strings.TrimSpace(countryMatches[1])
 
