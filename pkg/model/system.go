@@ -51,8 +51,9 @@ type CPUInfo struct {
 
 // MemoryInfo 表示内存信息
 type MemoryInfo struct {
-	Total uint64 // 总内存容量（字节）
-	Type  string // 内存类型（如LPDDR5, DDR4等）
+	Total   uint64 // 总内存容量（字节）
+	Type    string // 内存类型（如LPDDR5, DDR4等）
+	Details string // 内存模块详细信息
 }
 
 // Disk 表示存储设备信息

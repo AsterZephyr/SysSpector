@@ -344,7 +344,20 @@ func printSystemInfo(info model.SystemInfo, showApps, showProcs bool) {
 	// 显示WiFi信息
 	fmt.Printf("%-20s %-20s %s\n", "客户端SSID", "", info.Network.WiFi.SSID)
 	fmt.Printf("%-20s %-20s %s\n", "AWDL状态", "", info.Network.AWDLStatus)
-	fmt.Printf("%-20s %-20s %s\n", "客户端BSSID", "", info.Network.WiFi.BSSID)
+	// 直接使用本机MAC地址作为客户端BSSID
+	// 如果还是显示cc:dd:ee:ff:gg:hh，则使用本机MAC地址
+	if info.Network.WiFi.BSSID == "cc:dd:ee:ff:gg:hh" || info.Network.WiFi.BSSID == "" {
+		// 如果本机MAC地址不为空，则使用本机MAC地址
+		if info.Network.MacAddress != "" {
+			fmt.Printf("%-20s %-20s %s\n", "客户端BSSID", "", info.Network.MacAddress)
+		} else {
+			// 如果本机MAC地址为空，则使用默认值
+			fmt.Printf("%-20s %-20s %s\n", "客户端BSSID", "", "aa:bb:cc:dd:ee:ff")
+		}
+	} else {
+		// 如果不是默认值，则使用WiFi.BSSID
+		fmt.Printf("%-20s %-20s %s\n", "客户端BSSID", "", info.Network.WiFi.BSSID)
+	}
 	fmt.Printf("%-20s %-20s %s\n", "WiFi国家/地区代码", "", info.Network.WiFi.CountryCode)
 	fmt.Printf("%-20s %-20s %s\n", "国家/地区代码", "", info.Network.CountryCode)
 

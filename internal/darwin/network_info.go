@@ -11,6 +11,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -253,32 +255,178 @@ func getWiFiInfo(info *model.NetworkInfo) error {
 		}
 	}
 	
-	// 如果没有获取到完整信息，设置默认值
+	// 如果没有获取到完整信息，尝试使用其他方法获取
 	if !wifiInfo.IsConnected || wifiInfo.SSID == "" {
-		wifiInfo = model.WiFiInfo{
-			SSID:           "Kwai",
-			BSSID:          "cc:dd:ee:ff:gg:hh",
-			IsConnected:    true,
-			SignalStrength: -53,
-			RSSI:           -53,
-			Noise:          -93,
-			Channel:        64,
-			Frequency:      5.0,
-			PHYMode:        "802.11ac",
-			TxRate:         573,
-			MCS:            11,
-			NSS:            3,
-			CountryCode:    "CN",
-			SupportedPHY:   "802.11a/b/g/n/ac/ax",
+		log.Printf("主要WiFi信息获取失败，尝试使用备用方法")
+		
+		// 尝试使用airport命令获取更详细的WiFi信息
+		cmd := exec.Command("/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport", "-I")
+		output, err := cmd.Output()
+		if err == nil {
+			outputStr := string(output)
+			log.Printf("使用airport命令获取到的WiFi信息: %s", outputStr)
+			
+			// 解析SSID
+			ssidRegex := regexp.MustCompile(` SSID: (.+)$`)
+			ssidMatches := ssidRegex.FindStringSubmatch(outputStr)
+			if len(ssidMatches) > 1 {
+				wifiInfo.SSID = strings.TrimSpace(ssidMatches[1])
+				wifiInfo.IsConnected = true
+			}
+			
+			// 解析BSSID
+			bssidRegex := regexp.MustCompile(` BSSID: ([0-9a-f:]+)$`)
+			bssidMatches := bssidRegex.FindStringSubmatch(outputStr)
+			if len(bssidMatches) > 1 {
+				wifiInfo.BSSID = strings.TrimSpace(bssidMatches[1])
+			}
+			
+			// 解析信号强度
+			rssiRegex := regexp.MustCompile(` agrCtlRSSI: (-?\d+)$`)
+			rssiMatches := rssiRegex.FindStringSubmatch(outputStr)
+			if len(rssiMatches) > 1 {
+				rssi, _ := strconv.Atoi(strings.TrimSpace(rssiMatches[1]))
+				wifiInfo.RSSI = rssi
+				wifiInfo.SignalStrength = rssi
+			}
+			
+			// 解析噪声
+			noiseRegex := regexp.MustCompile(` agrCtlNoise: (-?\d+)$`)
+			noiseMatches := noiseRegex.FindStringSubmatch(outputStr)
+			if len(noiseMatches) > 1 {
+				noise, _ := strconv.Atoi(strings.TrimSpace(noiseMatches[1]))
+				wifiInfo.Noise = noise
+			}
+			
+			// 解析频道
+			channelRegex := regexp.MustCompile(` channel: (\d+)$`)
+			channelMatches := channelRegex.FindStringSubmatch(outputStr)
+			if len(channelMatches) > 1 {
+				channel, _ := strconv.Atoi(strings.TrimSpace(channelMatches[1]))
+				wifiInfo.Channel = channel
+				
+				// 根据频道计算频率
+				if channel >= 1 && channel <= 14 {
+					wifiInfo.Frequency = 2.4
+				} else if channel >= 36 && channel <= 165 {
+					wifiInfo.Frequency = 5.0
+				} else if channel >= 1 && channel <= 253 {
+					wifiInfo.Frequency = 6.0
+				}
+			}
+			
+			// 解析国家/地区代码
+			countryRegex := regexp.MustCompile(` country: ([A-Z]+)$`)
+			countryMatches := countryRegex.FindStringSubmatch(outputStr)
+			if len(countryMatches) > 1 {
+				wifiInfo.CountryCode = strings.TrimSpace(countryMatches[1])
+			}
+			
+			// 解析传输速率
+			txRateRegex := regexp.MustCompile(` lastTxRate: (\d+)$`)
+			txRateMatches := txRateRegex.FindStringSubmatch(outputStr)
+			if len(txRateMatches) > 1 {
+				txRate, _ := strconv.Atoi(strings.TrimSpace(txRateMatches[1]))
+				wifiInfo.TxRate = txRate
+			}
+			
+			// 解析PHY模式
+			phyRegex := regexp.MustCompile(` 802.11[a-z]+`)
+			phyMatches := phyRegex.FindString(outputStr)
+			if phyMatches != "" {
+				wifiInfo.PHYMode = strings.TrimSpace(phyMatches)
+			}
+			
+			// 计算MCS和NSS
+			if wifiInfo.TxRate > 0 {
+				if wifiInfo.PHYMode == "802.11ac" {
+					if wifiInfo.TxRate >= 1300 {
+						wifiInfo.MCS = 9
+						wifiInfo.NSS = 3
+					} else if wifiInfo.TxRate >= 866 {
+						wifiInfo.MCS = 9
+						wifiInfo.NSS = 2
+					} else if wifiInfo.TxRate >= 433 {
+						wifiInfo.MCS = 9
+						wifiInfo.NSS = 1
+					} else {
+						wifiInfo.MCS = 7
+						wifiInfo.NSS = 1
+					}
+				} else if wifiInfo.PHYMode == "802.11ax" {
+					if wifiInfo.TxRate >= 1200 {
+						wifiInfo.MCS = 11
+						wifiInfo.NSS = 2
+					} else {
+						wifiInfo.MCS = 11
+						wifiInfo.NSS = 1
+					}
+				} else {
+					wifiInfo.MCS = 7
+					wifiInfo.NSS = 1
+				}
+			}
+		}
+		
+		// 如果仍然没有获取到信息，使用通用默认值
+		if !wifiInfo.IsConnected || wifiInfo.SSID == "" {
+			log.Printf("所有方法都失败，使用通用默认值")
+			wifiInfo = model.WiFiInfo{
+				SSID:           "Unknown",
+				BSSID:          "00:00:00:00:00:00",
+				IsConnected:    true,
+				SignalStrength: -60,
+				RSSI:           -60,
+				Noise:          -90,
+				Channel:        36,
+				Frequency:      5.0,
+				PHYMode:        "802.11ac",
+				TxRate:         400,
+				MCS:            9,
+				NSS:            1,
+				CountryCode:    "",  // 留空表示未知
+				SupportedPHY:   "802.11a/b/g/n/ac/ax",
+			}
 		}
 	} else {
 		// 填充缺失的信息
 		if wifiInfo.BSSID == "" {
-			wifiInfo.BSSID = "72:0d:ec:13:08:23"
+			// 在macOS上，使用本机MAC地址作为BSSID
+			cmd := exec.Command("bash", "-c", "system_profiler SPAirPortDataType | grep 'MAC Address' | head -n 1 | awk '{print $3}'")
+			output, err := cmd.Output()
+			if err == nil && len(output) > 0 {
+				macAddress := strings.TrimSpace(string(output))
+				if macAddress != "" {
+					wifiInfo.BSSID = macAddress
+					log.Printf("使用本机MAC地址作为BSSID: %s", wifiInfo.BSSID)
+					// 同时设置到NetworkInfo的MacAddress字段
+					info.MacAddress = macAddress
+				} else {
+					// 如果无法获取MAC地址，尝试使用airport命令
+					airportCmd := exec.Command("/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport", "-I")
+					airportOutput, airportErr := airportCmd.Output()
+					if airportErr == nil {
+						airportOutputStr := string(airportOutput)
+						// 尝试从输出中提取BSSID
+						bssidRegex := regexp.MustCompile(` BSSID: ([0-9a-f:]+)`)
+						bssidMatches := bssidRegex.FindStringSubmatch(airportOutputStr)
+						if len(bssidMatches) > 1 {
+							wifiInfo.BSSID = strings.TrimSpace(bssidMatches[1])
+							log.Printf("使用airport命令获取到BSSID: %s", wifiInfo.BSSID)
+						}
+					}
+				}
+			}
+			
+			// 如果仍然无法获取，使用默认值
+			if wifiInfo.BSSID == "" {
+				wifiInfo.BSSID = "00:00:00:00:00:00"
+				log.Printf("未能获取到BSSID，使用默认值: %s", wifiInfo.BSSID)
+			}
 		}
 		if wifiInfo.RSSI == 0 {
-			wifiInfo.RSSI = -53
-			wifiInfo.SignalStrength = -53
+			wifiInfo.RSSI = -60
+			wifiInfo.SignalStrength = -60
 		}
 		if wifiInfo.Noise == 0 {
 			wifiInfo.Noise = -93
@@ -294,7 +442,28 @@ func getWiFiInfo(info *model.NetworkInfo) error {
 			wifiInfo.MCS = 11
 		}
 		if wifiInfo.CountryCode == "" {
-			wifiInfo.CountryCode = "CN"
+			// 这里的CountryCode是WiFi设备的国家/地区代码，与系统的国家/地区代码(networkInfo.CountryCode)可能不同
+			// WiFi国家/地区代码通常由路由器或接入点设置，用于确定WiFi频道和功率限制
+			log.Printf("未能获取到WiFi国家/地区代码，尝试使用系统默认值")
+			
+			// 尝试获取系统区域设置
+			cmd := exec.Command("defaults", "read", "-g", "AppleLocale")
+			output, err := cmd.Output()
+			if err == nil && len(output) >= 2 {
+				// AppleLocale格式通常为：zh_CN, en_US等
+				locale := strings.TrimSpace(string(output))
+				parts := strings.Split(locale, "_")
+				if len(parts) >= 2 {
+					wifiInfo.CountryCode = parts[1]
+					log.Printf("从系统区域设置获取WiFi国家/地区代码: %s", wifiInfo.CountryCode)
+				}
+			}
+			
+			// 如果仍然无法获取，使用默认值
+			if wifiInfo.CountryCode == "" {
+				wifiInfo.CountryCode = "US" // 使用更通用的默认值
+				log.Printf("无法获取WiFi国家/地区代码，使用默认值: %s", wifiInfo.CountryCode)
+			}
 		}
 		if wifiInfo.PHYMode == "" {
 			wifiInfo.PHYMode = "802.11ac"
@@ -303,7 +472,34 @@ func getWiFiInfo(info *model.NetworkInfo) error {
 			wifiInfo.SupportedPHY = "802.11a/b/g/n/ac/ax"
 		}
 	}
+	// 确保始终使用正确的BSSID（即本机MAC地址）
+	cmd := exec.Command("bash", "-c", "system_profiler SPAirPortDataType | grep 'MAC Address' | head -n 1 | awk '{print $3}'")
+	output, err := cmd.Output()
+	if err == nil && len(output) > 0 {
+		macAddress := strings.TrimSpace(string(output))
+		if macAddress != "" {
+			// 强制设置BSSID为本机MAC地址
+			wifiInfo.BSSID = macAddress
+			log.Printf("最终确认：使用本机MAC地址作为BSSID: %s", wifiInfo.BSSID)
+			
+			// 同时设置到NetworkInfo的MacAddress字段
+			info.MacAddress = macAddress
+		}
+	}
 	
+	// 确保不会出现cc:dd:ee:ff:gg:hh这个值
+	if wifiInfo.BSSID == "cc:dd:ee:ff:gg:hh" {
+		// 如果还是这个值，则使用本机MAC地址或默认值
+		if info.MacAddress != "" {
+			wifiInfo.BSSID = info.MacAddress
+			log.Printf("发现BSSID为默认值，替换为本机MAC地址: %s", wifiInfo.BSSID)
+		} else {
+			wifiInfo.BSSID = "00:00:00:00:00:00"
+			log.Printf("发现BSSID为默认值，替换为通用默认值: %s", wifiInfo.BSSID)
+		}
+	}
+	
+	// 设置WiFi信息
 	info.WiFi = wifiInfo
 	return nil
 }
@@ -706,6 +902,7 @@ func getVPNInfo(info *model.NetworkInfo) error {
 	// 检查常见VPN客户端进程
 	psOutput, err := runCommand("ps", "aux")
 	if err == nil {
+		log.Printf("获取进程列表成功，开始检查VPN客户端")
 		// 检查常见VPN客户端进程
 		vpnClients := map[string]string{
 			"Cisco AnyConnect": "vpnagentd",
@@ -720,34 +917,92 @@ func getVPNInfo(info *model.NetworkInfo) error {
 			"FortiClient":      "FortiClient",
 			"Kit":              "Kit.app",
 			"ZeroPass":         "zeropassAgent",
+			"Shadowrocket":     "Shadowrocket",
+			"Surge":            "Surge",
+			"Clash":            "Clash",
+			"ClashX":           "ClashX",
+			"V2rayU":           "V2rayU",
+			"Qv2ray":           "Qv2ray",
 		}
 
 		for clientName, processName := range vpnClients {
 			if strings.Contains(psOutput, processName) {
+				log.Printf("检测到VPN客户端: %s (进程: %s)", clientName, processName)
 				vpnInfo.IsConnected = true
 				vpnInfo.ClientName = clientName
 				vpnInfo.NodeName = clientName + " VPN"
 				
-				// 如果是Kit应用，获取更多详细信息
-				if clientName == "Kit" || clientName == "ZeroPass" {
+				// 根据不同的VPN客户端获取更多详细信息
+				switch clientName {
+				case "Kit", "ZeroPass":
 					vpnInfo.NodeName = "Kit VPN (ZeroPass)"
 					
-					// 尝试获取Kit的详细信息
+					// 尝试提取Kit的命令行参数，可能包含连接信息
 					kitOutput, err := runCommand("ps", "aux", "|", "grep", "Kit.app")
 					if err == nil && kitOutput != "" {
+						log.Printf("获取Kit应用信息: %s", kitOutput)
 						// 提取Kit的命令行参数，可能包含连接信息
 						kitRegex := regexp.MustCompile(`Kit.app.*?(\S+)`)
 						kitMatches := kitRegex.FindStringSubmatch(kitOutput)
 						if len(kitMatches) > 1 {
 							vpnInfo.NodeName = "Kit VPN (" + kitMatches[1] + ")"
+							log.Printf("从命令行提取到Kit节点信息: %s", kitMatches[1])
+						}
+					} else {
+						log.Printf("无法获取Kit应用详细信息: %v", err)
+					}
+				
+				case "Surge", "ClashX", "Clash", "Shadowrocket":
+					// 尝试获取代理工具的配置文件路径
+					log.Printf("检测到代理工具: %s", clientName)
+					vpnInfo.Provider = clientName
+					
+					// 尝试获取代理工具的配置文件路径
+					homeDir, err := os.UserHomeDir()
+					if err == nil {
+						var configPath string
+						switch clientName {
+						case "Surge":
+							configPath = filepath.Join(homeDir, "Library", "Application Support", "Surge")
+						case "ClashX", "Clash":
+							configPath = filepath.Join(homeDir, ".config", "clash")
+						}
+						
+						if configPath != "" {
+							vpnInfo.ConfigFile = configPath
+							log.Printf("代理工具配置文件路径: %s", configPath)
+						}
+					}
+				
+				case "Cisco AnyConnect":
+					// 尝试获取Cisco AnyConnect的连接状态
+					ciscoOutput, err := runCommand("ps", "aux", "|", "grep", "vpnagentd")
+					if err == nil && ciscoOutput != "" {
+						log.Printf("检测到Cisco AnyConnect进程: %s", ciscoOutput)
+						// 可以添加更多的Cisco AnyConnect状态检测逻辑
+					}
+				
+				case "OpenVPN":
+					// 尝试获取OpenVPN的连接状态
+					openvpnOutput, err := runCommand("ps", "aux", "|", "grep", "openvpn")
+					if err == nil && openvpnOutput != "" {
+						log.Printf("检测到OpenVPN进程: %s", openvpnOutput)
+						// 提取OpenVPN的配置文件路径
+						configRegex := regexp.MustCompile(`--config\s+([^\s]+)`)
+						configMatches := configRegex.FindStringSubmatch(openvpnOutput)
+						if len(configMatches) > 1 {
+							vpnInfo.ConfigFile = configMatches[1]
+							log.Printf("从OpenVPN命令行提取到配置文件路径: %s", vpnInfo.ConfigFile)
 						}
 					}
 				}
 				
-				break
+				// 添加到节点列表
+				vpnInfo.Nodes = append(vpnInfo.Nodes, vpnInfo.NodeName)
 			}
 		}
 	}
+	
 
 	// 设置VPN信息
 	info.VPN = vpnInfo
@@ -1169,7 +1424,8 @@ func parseNetstatOutput(output string) int64 {
 	return totalBytes
 }
 
-// getCountryCode 获取用户当前所在地区代码
+// getCountryCode 获取用户当前所在地区代码（系统国家/地区代码）
+// 注意：这个函数获取的是基于IP地址的地理位置国家/地区代码，与WiFi设备的国家/地区代码不同
 func getCountryCode(info *model.NetworkInfo) error {
 	// 使用IP地址查询API获取国家/地区代码
 	client := &http.Client{

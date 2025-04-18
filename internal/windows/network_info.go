@@ -530,6 +530,55 @@ func GetNetworkInfo() (model.NetworkInfo, error) {
 	// 获取网络流量
 	info.NetworkTraffic = getNetworkTraffic()
 
+	// 获取hosts文件内容
+	info.RouteTable = getRouteTable()
+
+	// 获取hosts文件条目并存储
+	hostsEntries := getHostsFile()
+	if len(hostsEntries) > 0 {
+		// 将所有hosts条目存储到DNS配置中
+		info.DNS.HostEntries = hostsEntries
+
+		// 同时生成格式化的文本版本
+		var hostsLines []string
+		for _, entry := range hostsEntries {
+			hostsLines = append(hostsLines, fmt.Sprintf("%s\t%s", entry.IP, entry.Hostname))
+		}
+		info.DNS.HostsFile = strings.Join(hostsLines, "\n")
+
+		log.Printf("成功获取hosts文件条目，共%d条", len(hostsEntries))
+	}
+
+	// 获取DNS配置
+	if len(adapterConfigs) > 0 && len(adapterConfigs[0].DNSServerSearchOrder) > 0 {
+		// 从网络适配器配置中提取DNS服务器
+		info.DNS.Servers = adapterConfigs[0].DNSServerSearchOrder
+		info.DNSServers = adapterConfigs[0].DNSServerSearchOrder // 兼容性字段
+	} else {
+		// 如果无法从适配器配置获取，尝试使用ipconfig命令
+		outputStr, err := execCmdWithGBKConversion("ipconfig", "/all")
+		if err == nil {
+			// 解析DNS服务器
+			dnsRegex := regexp.MustCompile(`(?:DNS \u670d\u52a1\u5668|DNS Servers).*?:\s*(.+)`)
+			dnsMatches := dnsRegex.FindAllStringSubmatch(outputStr, -1)
+
+			var dnsServers []string
+			for _, match := range dnsMatches {
+				if len(match) > 1 {
+					dnsServer := strings.TrimSpace(match[1])
+					if dnsServer != "" {
+						dnsServers = append(dnsServers, dnsServer)
+					}
+				}
+			}
+
+			if len(dnsServers) > 0 {
+				info.DNS.Servers = dnsServers
+				info.DNSServers = dnsServers // 兼容性字段
+			}
+		}
+	}
+
 	return info, nil
 }
 
@@ -572,7 +621,6 @@ func getNetworkLatency(info *model.NetworkInfo) {
 			TargetName: target.name,
 			TargetHost: target.host,
 		}
-
 		// 提取延迟信息
 		// 示例输出: 最短 = 4ms，最长 = 6ms，平均 = 5ms
 		minRegex := regexp.MustCompile(`最短 = (\d+)ms`)
@@ -881,16 +929,35 @@ func getHostsFile() []model.HostEntry {
 	var hosts []model.HostEntry
 
 	// 读取hosts文件
+	// 先尝试使用SystemRoot环境变量
 	hostsPath := os.Getenv("SystemRoot") + "\\System32\\drivers\\etc\\hosts"
+	
+	// 如果环境变量不可用，则使用默认路径
+	if os.Getenv("SystemRoot") == "" {
+		hostsPath = "C:\\Windows\\System32\\drivers\\etc\\hosts"
+	}
+	
+	log.Printf("读取hosts文件: %s", hostsPath)
 	content, err := ioutil.ReadFile(hostsPath)
 	if err != nil {
-		log.Printf("Error reading hosts file: %v", err)
-		return hosts
+		log.Printf("读取hosts文件失败: %v", err)
+		
+		// 如果默认路径不可用，尝试其他可能的路径
+		alternativePath := "C:\\WINDOWS\\system32\\drivers\\etc\\hosts"
+		log.Printf("尝试备用路径: %s", alternativePath)
+		content, err = ioutil.ReadFile(alternativePath)
+		if err != nil {
+			log.Printf("读取备用hosts文件路径失败: %v", err)
+			return hosts
+		}
 	}
 
 	// 解析hosts文件
+	log.Printf("开始解析hosts文件内容，文件大小: %d字节", len(content))
 	lines := strings.Split(string(content), "\n")
-	for _, line := range lines {
+	log.Printf("共解析到%d行", len(lines))
+	
+	for i, line := range lines {
 		line = strings.TrimSpace(line)
 
 		// 跳过注释和空行
@@ -899,19 +966,35 @@ func getHostsFile() []model.HostEntry {
 		}
 
 		// 解析IP和主机名
+		// 先移除行内注释
+		if idx := strings.Index(line, "#"); idx > 0 {
+			line = strings.TrimSpace(line[:idx])
+		}
+		
 		fields := regexp.MustCompile(`\s+`).Split(line, -1)
 		if len(fields) >= 2 {
 			ip := fields[0]
+			
+			// 验证IP地址格式
+			ipRegex := regexp.MustCompile(`^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$|^[0-9a-fA-F:]+$`)
+			if !ipRegex.MatchString(ip) {
+				log.Printf("第%d行包含无效IP地址: %s", i+1, ip)
+				continue
+			}
+			
 			for _, hostname := range fields[1:] {
 				if hostname != "" && !strings.HasPrefix(hostname, "#") {
 					hosts = append(hosts, model.HostEntry{
 						IP:       ip,
 						Hostname: hostname,
 					})
+					log.Printf("解析到hosts条目: %s -> %s", ip, hostname)
 				}
 			}
 		}
 	}
+	
+	log.Printf("成功解析hosts文件，共找到%d条有效记录", len(hosts))
 
 	return hosts
 }

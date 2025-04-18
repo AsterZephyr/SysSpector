@@ -219,21 +219,122 @@ func GetSystemInfo() (model.SystemInfo, error) {
 		memType := "Unknown"
 		memTypeOutput, err := runCommand("system_profiler", "SPMemoryDataType")
 		if err != nil {
-			log.Printf("Error getting memory type: %v", err)
-		} else {
-			// 尝试从输出中提取内存类型
-			if strings.Contains(memTypeOutput, "Type: LPDDR5") {
-				memType = "LPDDR5"
-			} else if strings.Contains(memTypeOutput, "Type: LPDDR4") {
-				memType = "LPDDR4"
-			} else if strings.Contains(memTypeOutput, "Type: DDR4") {
-				memType = "DDR4"
+			log.Printf("获取内存类型失败: %v，尝试使用备用方法", err)
+			// 尝试使用sysctl命令获取内存类型
+			sysctlOutput, err := runCommand("sysctl", "hw.memtype")
+			if err == nil && sysctlOutput != "" {
+				// 解析sysctl输出
+				parts := strings.Split(sysctlOutput, ": ")
+				if len(parts) > 1 {
+					memType = strings.TrimSpace(parts[1])
+					log.Printf("通过sysctl获取到内存类型: %s", memType)
+				}
 			}
+		} else {
+			log.Printf("system_profiler SPMemoryDataType输出: %s", memTypeOutput)
+			
+			// 使用正则表达式提取内存类型
+			typeRegex := regexp.MustCompile(`Type: ([A-Za-z0-9]+)`)
+			typeMatches := typeRegex.FindStringSubmatch(memTypeOutput)
+			if len(typeMatches) > 1 {
+				memType = typeMatches[1]
+				log.Printf("从system_profiler提取到内存类型: %s", memType)
+			} else {
+				// 检查常见内存类型
+				memoryTypes := []string{"LPDDR5", "LPDDR4X", "LPDDR4", "LPDDR3", "DDR5", "DDR4", "DDR3", "DDR2"}
+				for _, mt := range memoryTypes {
+					if strings.Contains(memTypeOutput, mt) {
+						memType = mt
+						log.Printf("通过关键字匹配找到内存类型: %s", memType)
+						break
+					}
+				}
+			}
+			
+			// 如果仍然未找到，尝试提取更多信息作为Details字段
+			details := ""
+			speedRegex := regexp.MustCompile(`Speed: (\d+) MHz`)
+			speedMatches := speedRegex.FindStringSubmatch(memTypeOutput)
+			if len(speedMatches) > 1 {
+				details += "Speed: " + speedMatches[1] + " MHz"
+			}
+			
+			manufacturerRegex := regexp.MustCompile(`Manufacturer: ([^\n]+)`)
+			manufacturerMatches := manufacturerRegex.FindStringSubmatch(memTypeOutput)
+			if len(manufacturerMatches) > 1 {
+				if details != "" {
+					details += ", "
+				}
+				details += "Manufacturer: " + strings.TrimSpace(manufacturerMatches[1])
+			}
+			
+			partNumberRegex := regexp.MustCompile(`Part Number: ([^\n]+)`)
+			partNumberMatches := partNumberRegex.FindStringSubmatch(memTypeOutput)
+			if len(partNumberMatches) > 1 {
+				if details != "" {
+					details += ", "
+				}
+				details += "Part Number: " + strings.TrimSpace(partNumberMatches[1])
+			}
+			
+			// 保存详细信息
+			info.Memory.Details = details
+			log.Printf("内存详细信息: %s", details)
 		}
 
+		// 创建内存信息结构体
 		info.Memory = model.MemoryInfo{
 			Total: memInfo.Total,
 			Type:  memType,
+			// Details字段在前面的代码中已经设置，这里不需要重新设置
+		}
+		
+		// 如果内存类型仍然是“Unknown”且没有详细信息，尝试使用更多方法
+		if info.Memory.Type == "Unknown" && info.Memory.Details == "" {
+			log.Printf("尝试使用更多方法获取内存信息")
+			
+			// 尝试使用system_profiler SPHardwareDataType命令
+			hwOutput, err := runCommand("system_profiler", "SPHardwareDataType")
+			if err == nil {
+				// 尝试提取内存类型信息
+				log.Printf("SPHardwareDataType输出: %s", hwOutput)
+				
+				// 如果是Apple Silicon芯片，可能是LPDDR4X或LPDDR5
+				if strings.Contains(hwOutput, "Apple M1") {
+					info.Memory.Type = "LPDDR4X"
+					log.Printf("检测到Apple M1芯片，内存类型可能是LPDDR4X")
+				} else if strings.Contains(hwOutput, "Apple M2") {
+					info.Memory.Type = "LPDDR5"
+					log.Printf("检测到Apple M2芯片，内存类型可能是LPDDR5")
+				} else if strings.Contains(hwOutput, "Apple M3") {
+					info.Memory.Type = "LPDDR5"
+					log.Printf("检测到Apple M3芯片，内存类型可能是LPDDR5")
+				} else if strings.Contains(hwOutput, "Intel") {
+					// 如果是Intel芯片，根据年份推测内存类型
+					modelRegex := regexp.MustCompile(`Model Identifier: ([^\n]+)`)
+					modelMatches := modelRegex.FindStringSubmatch(hwOutput)
+					if len(modelMatches) > 1 {
+						modelID := modelMatches[1]
+						log.Printf("检测到Intel芯片，型号: %s", modelID)
+						// 根据型号年份推测内存类型
+						if strings.Contains(modelID, "202") || strings.Contains(modelID, "201") {
+							info.Memory.Type = "DDR4"
+						} else {
+							info.Memory.Type = "DDR3"
+						}
+					}
+				}		
+				// 提取内存大小信息作为详细信息
+				memSizeRegex := regexp.MustCompile(`Memory: (\d+) GB`)
+				memSizeMatches := memSizeRegex.FindStringSubmatch(hwOutput)
+				if len(memSizeMatches) > 1 {
+					if info.Memory.Details == "" {
+						info.Memory.Details = "Size: " + memSizeMatches[1] + " GB"
+					} else {
+						info.Memory.Details += ", Size: " + memSizeMatches[1] + " GB"
+					}
+				}
+			}
 		}
 	}
 

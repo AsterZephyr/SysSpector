@@ -10,6 +10,7 @@ import (
 	"log"
 	"os/exec"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -44,8 +45,14 @@ type win32BIOS struct {
 
 // win32PhysicalMemory 表示物理内存信息
 type win32PhysicalMemory struct {
-	Capacity   uint64 // 内存容量
-	MemoryType uint16 // 内存类型代码
+	Capacity            uint64 // 内存容量
+	MemoryType          uint16 // 内存类型代码
+	Speed               uint32 // 内存速度
+	ConfiguredClockSpeed uint32 // 配置的时钟速度
+	FormFactor          uint16 // 内存形式因子
+	TypeDetail          uint32 // 内存类型详细信息（位掩码）
+	Manufacturer        string // 制造商
+	PartNumber          string // 型号
 }
 
 // GBK到UTF-8的转换函数
@@ -359,12 +366,53 @@ func GetSystemInfo() (model.SystemInfo, error) {
 		}
 	}
 
+	// 内存类型映射表
+	memoryTypeMap := map[uint16]string{
+		0:  "未知",
+		1:  "Other",
+		2:  "DRAM",
+		3:  "Synchronous DRAM",
+		4:  "Cache DRAM",
+		5:  "EDO",
+		6:  "EDRAM",
+		7:  "VRAM",
+		8:  "SRAM",
+		9:  "RAM",
+		10: "ROM",
+		11: "Flash",
+		12: "EEPROM",
+		13: "FEPROM",
+		14: "EPROM",
+		15: "CDRAM",
+		16: "3DRAM",
+		17: "SDRAM",
+		18: "SGRAM",
+		19: "RDRAM",
+		20: "DDR",
+		21: "DDR2",
+		22: "DDR2 FB-DIMM",
+		24: "DDR3",
+		25: "FBD2",
+		26: "DDR4",
+		27: "LPDDR",
+		28: "LPDDR2",
+		29: "LPDDR3",
+		30: "LPDDR4",
+		31: "Logical non-volatile device",
+		32: "HBM",
+		33: "HBM2",
+		34: "DDR5",
+		35: "LPDDR5",
+		36: "HBM3",
+	}
+
 	// 通过调用safeWMIQuery()函数查询Win32_PhysicalMemory表获取内存信息
 	var memoryInfo []win32PhysicalMemory
-	err = safeWMIQuery("SELECT Capacity, MemoryType FROM Win32_PhysicalMemory", &memoryInfo)
+	// 扩展查询字段，包含更多内存相关属性
+	err = safeWMIQuery("SELECT Capacity, MemoryType, Speed, ConfiguredClockSpeed, FormFactor, TypeDetail, Manufacturer, PartNumber FROM Win32_PhysicalMemory", &memoryInfo)
 
 	// 通过调用mem.VirtualMemory()函数获取内存信息，并计算总内存和内存类型
-	memStats, err := mem.VirtualMemory()
+	_, err = mem.VirtualMemory()
 	if err != nil {
 		log.Printf("获取内存信息失败: %v", err)
 		// 尝试使用命令行获取内存信息
@@ -383,9 +431,120 @@ func GetSystemInfo() (model.SystemInfo, error) {
 			}
 		}
 	} else {
-		info.Memory = model.MemoryInfo{
-			Total: memStats.Total,
-			Type:  getMemoryTypeString(memoryInfo),
+		if err == nil && len(memoryInfo) > 0 {
+			var totalCapacity uint64
+			memType := uint16(0) // 默认未知
+			var memSpeed uint32 = 0
+			var memManufacturer string = ""
+			var memPartNumber string = ""
+			var memDetails []string
+			
+			// 计算总容量并收集内存详细信息
+			for i, mem := range memoryInfo {
+				totalCapacity += mem.Capacity
+				
+				// 获取第一个内存模块的类型作为主要类型
+				if i == 0 || (memType == 0 && mem.MemoryType > 0) {
+					memType = mem.MemoryType
+					memSpeed = mem.ConfiguredClockSpeed
+					memManufacturer = mem.Manufacturer
+					memPartNumber = mem.PartNumber
+				}
+				
+				// 收集每个内存模块的详细信息
+				moduleInfo := fmt.Sprintf("模块%d: %dMB, ", i+1, mem.Capacity/(1024*1024))
+				
+				// 添加内存速度
+				if mem.ConfiguredClockSpeed > 0 {
+					moduleInfo += fmt.Sprintf("%dMHz, ", mem.ConfiguredClockSpeed)
+				}
+				
+				// 添加制造商和型号
+				if mem.Manufacturer != "" {
+					moduleInfo += fmt.Sprintf("%s ", mem.Manufacturer)
+				}
+				if mem.PartNumber != "" {
+					moduleInfo += fmt.Sprintf("%s", strings.TrimSpace(mem.PartNumber))
+				}
+				
+				memDetails = append(memDetails, moduleInfo)
+			}
+			
+			// 从映射表获取内存类型描述
+			memTypeStr, ok := memoryTypeMap[memType]
+			if !ok || memTypeStr == "未知" {
+				// 如果WMI查询无法获取内存类型，尝试使用PowerShell命令
+				log.Printf("尝试使用PowerShell获取内存类型信息")
+				powerShellCmd := `Get-CimInstance -ClassName Win32_PhysicalMemory | Select-Object MemoryType, TypeDetail, ConfiguredClockSpeed, Manufacturer, PartNumber | ConvertTo-Json`
+				outputStr, err := execCmdWithGBKConversion("powershell", "-Command", powerShellCmd)
+				
+				if err == nil && outputStr != "" {
+					// 解析PowerShell输出的JSON结果
+					log.Printf("成功执行PowerShell命令，开始解析结果")
+					
+					// 如果输出中包含"DDR"字样，直接提取
+					ddrRegex := regexp.MustCompile(`DDR\d+`)
+					ddrMatches := ddrRegex.FindStringSubmatch(outputStr)
+					if len(ddrMatches) > 0 {
+						memTypeStr = ddrMatches[0]
+						log.Printf("从输出中提取到内存类型: %s", memTypeStr)
+					} else {
+						// 如果仍然无法获取，尝试使用wmic命令
+						log.Printf("无法从输出中提取内存类型，尝试使用wmic命令")
+						wmicOutput, err := execCmdWithGBKConversion("wmic", "memorychip", "get", "speed,manufacturer,partnumber")
+						if err == nil && wmicOutput != "" {
+							// 如果内存速度大于3000MHz，可能是DDR4或更高
+							speedRegex := regexp.MustCompile(`(\d{4,})`)
+							speedMatches := speedRegex.FindStringSubmatch(wmicOutput)
+							if len(speedMatches) > 0 {
+								speed, _ := strconv.Atoi(speedMatches[1])
+								if speed > 4800 {
+									memTypeStr = "DDR5"
+								} else if speed > 3000 {
+									memTypeStr = "DDR4"
+								} else if speed > 1600 {
+									memTypeStr = "DDR3"
+								} else {
+									memTypeStr = "DDR"
+								}
+								log.Printf("根据内存速度%dMHz推断内存类型: %s", speed, memTypeStr)
+							}
+						}
+					}
+				}
+			}
+			
+			// 如果内存速度可用，添加到类型描述中
+			if memSpeed > 0 {
+				memTypeStr = fmt.Sprintf("%s %dMHz", memTypeStr, memSpeed)
+			}
+			
+			// 添加制造商和型号信息（如果可用）
+			var extraInfo []string
+			if memManufacturer != "" {
+				extraInfo = append(extraInfo, memManufacturer)
+			}
+			if memPartNumber != "" {
+				extraInfo = append(extraInfo, strings.TrimSpace(memPartNumber))
+			}
+			if len(extraInfo) > 0 {
+				memTypeStr = fmt.Sprintf("%s (%s)", memTypeStr, strings.Join(extraInfo, " "))
+			}
+			
+			// 添加每个内存模块的详细信息
+			detailsStr := ""
+			if len(memDetails) > 0 {
+				detailsStr = strings.Join(memDetails, "; ")
+			}
+			
+			info.Memory = model.MemoryInfo{
+				Total: totalCapacity,
+				Type:  memTypeStr,
+				Details: detailsStr,
+			}
+			
+			log.Printf("成功获取内存信息: 总容量=%d字节, 类型=%s, 详情=%s", 
+				totalCapacity, memTypeStr, detailsStr)
 		}
 	}
 

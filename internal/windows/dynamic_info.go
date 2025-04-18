@@ -6,7 +6,6 @@ package windows
 import (
 	"fmt"
 	"log"
-	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
@@ -464,18 +463,88 @@ func getBluetoothInfo() (model.BluetoothInfo, error) {
 		}
 
 		// 获取已连接的蓝牙设备
-		deviceCmd := exec.Command("powershell", "-Command", "Get-PnpDevice | Where-Object {$_.Class -eq 'Bluetooth' -and $_.Status -eq 'OK'}")
-		deviceOutput, err := deviceCmd.Output()
-		if err == nil {
-			deviceOutputStr := string(deviceOutput)
-			lines := strings.Split(deviceOutputStr, "\n")
+		log.Printf("开始获取蓝牙设备详细信息")
 
-			for _, line := range lines {
-				if strings.Contains(line, "Bluetooth") && !strings.Contains(line, "Radio") {
-					fields := regexp.MustCompile(`\s+`).Split(strings.TrimSpace(line), -1)
-					if len(fields) >= 2 {
+		// 使用更详细的PowerShell命令获取蓝牙设备信息
+		detailCmd := "Get-PnpDevice | Where-Object {$_.Class -eq 'Bluetooth' -and $_.Status -eq 'OK'} | Select-Object FriendlyName, InstanceId | Format-List"
+		detailOutput, err := execCmdWithGBKConversion("powershell", "-Command", detailCmd)
+		if err == nil {
+			log.Printf("蓝牙设备详细信息: %s", detailOutput)
+
+			// 解析输出中的设备信息
+			deviceBlocks := strings.Split(detailOutput, "\r\n\r\n")
+			for _, block := range deviceBlocks {
+				if strings.TrimSpace(block) == "" {
+					continue
+				}
+
+				// 从每个设备块中提取友好名称和实例标识符
+				var friendlyName, instanceId string
+				lines := strings.Split(block, "\r\n")
+				for _, line := range lines {
+					line = strings.TrimSpace(line)
+					if strings.HasPrefix(line, "FriendlyName :") {
+						friendlyName = strings.TrimSpace(strings.TrimPrefix(line, "FriendlyName :"))
+					} else if strings.HasPrefix(line, "InstanceId :") {
+						instanceId = strings.TrimSpace(strings.TrimPrefix(line, "InstanceId :"))
+					}
+				}
+
+				// 如果是蓝牙设备且不是蓝牙适配器本身
+				if instanceId != "" && friendlyName != "" &&
+					strings.Contains(instanceId, "BTHENUM") &&
+					!strings.Contains(friendlyName, "Adapter") &&
+					!strings.Contains(friendlyName, "Radio") {
+					log.Printf("发现蓝牙设备: %s (%s)", friendlyName, instanceId)
+					bluetoothInfo.ConnectedDevices = append(bluetoothInfo.ConnectedDevices, model.BTDeviceInfo{
+						Name:      friendlyName,
+						Address:   instanceId,
+						Type:      "蓝牙设备",
+						Connected: true,
+					})
+				}
+			}
+		}
+
+		// 如果上述方法未找到设备，尝试使用备用方法
+		if len(bluetoothInfo.ConnectedDevices) == 0 {
+			log.Printf("使用备用方法获取蓝牙设备信息")
+
+			// 尝试使用原始方法获取蓝牙设备信息
+			altCmd := "Get-WmiObject Win32_PnPEntity | Where-Object {$_.PNPClass -eq 'Bluetooth' -and $_.Status -eq 'OK'} | Select-Object Name, DeviceID | Format-List"
+			altOutput, err := execCmdWithGBKConversion("powershell", "-Command", altCmd)
+			if err == nil {
+				log.Printf("备用方法获取的蓝牙设备信息: %s", altOutput)
+
+				// 解析输出
+				deviceBlocks := strings.Split(altOutput, "\r\n\r\n")
+				for _, block := range deviceBlocks {
+					if strings.TrimSpace(block) == "" {
+						continue
+					}
+
+					// 从每个设备块中提取名称和设备ID
+					var name, deviceID string
+					lines := strings.Split(block, "\r\n")
+					for _, line := range lines {
+						line = strings.TrimSpace(line)
+						if strings.HasPrefix(line, "Name :") {
+							name = strings.TrimSpace(strings.TrimPrefix(line, "Name :"))
+						} else if strings.HasPrefix(line, "DeviceID :") {
+							deviceID = strings.TrimSpace(strings.TrimPrefix(line, "DeviceID :"))
+						}
+					}
+
+					// 如果是蓝牙设备且不是蓝牙适配器本身
+					if deviceID != "" && name != "" &&
+						strings.Contains(deviceID, "BTHENUM") &&
+						!strings.Contains(name, "Adapter") &&
+						!strings.Contains(name, "Radio") {
+						log.Printf("发现蓝牙设备: %s (%s)", name, deviceID)
 						bluetoothInfo.ConnectedDevices = append(bluetoothInfo.ConnectedDevices, model.BTDeviceInfo{
-							Name:      fields[len(fields)-1],
+							Name:      name,
+							Address:   deviceID,
+							Type:      "蓝牙设备",
 							Connected: true,
 						})
 					}
